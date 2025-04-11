@@ -1,3 +1,7 @@
 jupyter
 torch
 torchvision
+random
+contextlib
+matplotlib
+numpy
