@@ -1,7 +1,8 @@
 jupyter
 torch
 torchvision
-random
-contextlib
+scikit-learn
 matplotlib
 numpy
+pandas
+gdown

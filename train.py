@@ -42,14 +42,14 @@ model = resnet18(num_classes=num_classes, use_mixstyle=True, mixstyle_layers=['l
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-correct = 0
-total = 0
 
 # training Loop
 for epoch in range(num_epochs):
     model.train()
     running_loss = 0.0
-    
+    correct = 0
+    total = 0
+
     for images, labels in train_loader:
         images, labels = images.to(device), labels.to(device)
 
