@@ -3,7 +3,7 @@ import torch.nn as nn
 import json
 
 
-class StyleStatistics:
+class StyleStatistics(nn.Module):
     def __init__(self, num_domains: int, num_layers: int):
         super().__init__()
         self.num_domains = num_domains
@@ -77,6 +77,14 @@ class StyleStatistics:
         style_stats.count = torch.tensor(stats_dict["count"], dtype=torch.long)
 
         return style_stats
+    
 
+    def save(self, path):
+        torch.save(self.state_dict(), path)
+
+
+    def load(self, path, device="cuda"):
+        state_dict = torch.load(path, map_location=device)
+        self.load_state_dict(state_dict)
 
 
