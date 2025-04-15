@@ -2,7 +2,7 @@ import random
 import torch
 import torch.nn as nn
 # from contextlib import contextmanager
-
+from ._styleextraction import StyleStatistics
 
 
 """
@@ -13,11 +13,13 @@ Code taken and slightly adapted from:
 
 class MixStyle(nn.Module):
     def __init__(
-            self,
-            p: float = 0.5,
-            alpha: float = 0.1,
-            eps: float = 1e-6,
-            mix: str = 'random'
+            self, 
+            p=0.5, 
+            alpha=0.5, 
+            eps=1e-5, 
+            mix='random', 
+            num_domains=None, 
+            num_layers=2
     ):
         """
         Args:
@@ -33,6 +35,12 @@ class MixStyle(nn.Module):
         self.alpha = alpha
         self.mix = mix
         self._active = True
+        self.num_layers = num_layers
+
+        if num_domains is not None:
+            self.style_stats = StyleStatistics(num_domains, num_layers)
+        else:
+            self.style_stats = None
 
     def __repr__(self):
         return f'MixStyle(p={self.p}, alpha={self.alpha}, eps={self.eps}, mix={self.mix})'
@@ -43,7 +51,7 @@ class MixStyle(nn.Module):
     def update_mix_method(self, mix='random'):
         self.mix = mix
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor, domain_labels: torch.Tensor = None, layer_idx: int = 0):
         if not self.training or not self._active:
             return x
 
@@ -57,6 +65,12 @@ class MixStyle(nn.Module):
         sig = (var + self.eps).sqrt()
         mu, sig = mu.detach(), sig.detach()
         x_normed = (x - mu) / sig
+
+        # save stats for the current layer
+        if self.store_stats and domain_labels is not None:
+            for domain in torch.unique(domain_labels):
+                mask = domain_labels == domain
+                self.style_stats.update(domain.item(), self.layer_idx, mu[mask], sig[mask])
 
         lam = self.beta.sample((B, 1, 1, 1))
         lam = lam.to(x.device)
