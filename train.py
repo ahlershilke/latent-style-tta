@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
+from tqdm import tqdm
 from torch.utils.data import DataLoader, random_split
 from models._resnet import resnet18, resnet34, resnet50, resnet101, resnet152
 from models._mixstyle import MixStyle
@@ -67,7 +68,7 @@ for epoch in range(num_epochs):
     correct = 0
     total = 0
 
-    for images, class_labels, domain_labels in train_loader:
+    for images, class_labels, domain_labels in tqdm(train_loader):
         images = images.to(device)
         class_labels = class_labels.to(device)
         domain_labels = domain_labels.to(device)  # shape: [batch_size]
@@ -87,6 +88,7 @@ for epoch in range(num_epochs):
         
     accuracy = 100 * correct / total
     model.get_style_stats().save_style_stats_to_json('style_statistics.json')
+    model.get_style_stats().save('style_stats.pth')
     print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {running_loss/len(train_loader):.4f}, Accuracy: {accuracy:.2f}%")
 
 torch.save(model.state_dict(), "resnet_mixstyle_testrun.pth")

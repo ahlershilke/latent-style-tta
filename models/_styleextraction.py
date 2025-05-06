@@ -9,7 +9,7 @@ class StyleStatistics(nn.Module):
     def __init__(self,
         num_domains: int,
         num_layers: int,
-        mode: str = "single",  # "average", "selective", "paired", "attention", "single"
+        mode: str = "selective",  # "average", "selective", "paired", "attention", "single"
         layer_config=None,      # for "selective", "paired" or "single"
         use_ema: bool = True,  # exponential moving average
         ema_momentum: float = DEFAULT_MOMENTUM,  # momentum for EMA
@@ -94,8 +94,8 @@ class StyleStatistics(nn.Module):
         if not self._should_update_layer(layer_idx):
             return
     
-        if not hasattr(self, 'mu_dict'):
-            self._initialize_buffers()
+        mu = mu.squeeze(-1).squeeze(-1)  # shape: [B, C]
+        sig = sig.squeeze(-1).squeeze(-1)  # shape: [B, C]
     
         for d in domain_idx.unique():
             mask = domain_idx == d
@@ -133,11 +133,11 @@ class StyleStatistics(nn.Module):
         device = self.count.device
     
         self.mu_dict[str(layer_idx)] = nn.Parameter(
-            torch.zeros(self.num_domains, num_channels, 1, 1, device=device),
+            torch.zeros(self.num_domains, num_channels, device=device),
             requires_grad=False
         )
         self.sig_dict[str(layer_idx)] = nn.Parameter(
-            torch.zeros(self.num_domains, num_channels, 1, 1, device=device),
+            torch.zeros(self.num_domains, num_channels, device=device),
             requires_grad=False
         )
 
@@ -168,71 +168,103 @@ class StyleStatistics(nn.Module):
     def _simple_update(self, domain_idx: int, layer_idx: int, mu: torch.Tensor, sig: torch.Tensor):
         """Perform simple average update."""
         total = self.count[domain_idx]
-        self.mu[layer_idx, domain_idx] = (self.mu[layer_idx, domain_idx] * total + mu) / (total + 1)
-        self.sig[layer_idx, domain_idx] = (self.sig[layer_idx, domain_idx] * total + sig) / (total + 1)
+        self.mu_dict[layer_idx, domain_idx] = (self.mu_dict[layer_idx, domain_idx] * total + mu) / (total + 1)
+        self.sig_dict[layer_idx, domain_idx] = (self.sig_dict[layer_idx, domain_idx] * total + sig) / (total + 1)
         self.count[domain_idx] += 1
 
-    
+    # TODO funktionalität ist noch nicht ganz da, man kann nicht richtig zwischen modes switchen
     def get_style_stats(self, domain_idx: int):
-        """Returns the style statistics for the given domain index."""
+        """Returns the style statistics for the given domain index.
+    
+        Args:
+            domain_idx: Index of the target domain.
+        
+        Returns:
+            Tuple of (mu, sig) where:
+                - mu: Combined mean statistics
+                - sig: Combined standard deviation statistics
+        """
+        
         if self.mode == "single":
-            # statistics for a single layer
-            mu = self.mu[self.target_layer, domain_idx]
-            sig = self.sig[self.target_layer, domain_idx]
+            # statistics from a single target layer
+            mu = self.mu_dict[str(self.target_layer)][domain_idx]
+            sig = self.sig_dict[str(self.target_layer)][domain_idx]
         
         elif self.mode == "average":
             # averaging across all layers
-            mu = self.mu[:, domain_idx].mean(dim=0)
-            sig = self.sig[:, domain_idx].mean(dim=0)
+            mu = sum(self.mu_dict[layer][domain_idx] for layer in self.mu_dict)
+            sig = sum(self.sig_dict[layer][domain_idx] for layer in self.sig_dict)
         
         elif self.mode == "selective":
             # averaging across selected layers
-            mu = self.mu[self.target_layers, domain_idx].mean(dim=0)
-            sig = self.sig[self.target_layers, domain_idx].mean(dim=0)
+            mu = sum(self.mu_dict[str(layer)][domain_idx] for layer in self.target_layers)
+            sig = sum(self.sig_dict[str(layer)][domain_idx] for layer in self.target_layers)
         
         elif self.mode == "paired":
             # pairwise averaging
-            all_mu = [self.mu[pair, domain_idx].mean(dim=0) for pair in self.layer_pairs]
-            all_sig = [self.sig[pair, domain_idx].mean(dim=0) for pair in self.layer_pairs]
-            mu = torch.stack(all_mu).mean(dim=0)
-            sig = torch.stack(all_sig).mean(dim=0)
+            mu = sum(
+                self.mu_dict[str(pair[0])][domain_idx] + self.mu_dict[str(pair[1])][domain_idx]
+                for pair in self.layer_pairs
+            )
+            sig = sum(
+                self.sig_dict[str(pair[0])][domain_idx] + self.sig_dict[str(pair[1])][domain_idx]
+                for pair in self.layer_pairs
+            )
         
         elif self.mode == "attention":
             # weighted average based on layer weights
+            assert len(self.layer_weights) == len(self.mu_dict), "Layer weights mismatch!"
+    
             weights = torch.softmax(self.layer_weights, dim=0)
-            mu = (weights[:, None, None, None] * self.mu[:, domain_idx]).sum(dim=0)
-            sig = (weights[:, None, None, None] * self.sig[:, domain_idx]).sum(dim=0)
-        
-        return mu, sig
+    
+            mu = sum(
+                weights[i] * self.mu_dict[str(i)][domain_idx] 
+                for i in range(len(self.mu_dict))
+            )
+            sig = sum(
+                weights[i] * self.sig_dict[str(i)][domain_idx] 
+                for i in range(len(self.sig_dict))
+            )
+
+        return mu.unsqueeze(-1).unsqueeze(-1), sig.unsqueeze(-1).unsqueeze(-1)
 
 
     def save_style_stats_to_json(self, filepath: str) -> None:
         """
-        Saves the StyleStatistics to a JSON file.
-        Args:
-            filepath: Path to save the JSON file.
+        Saves style stats in a domain-centric flat structure.
+        Example output for domain 0, layer 0 with 3 channels:
+        {
+            "mu": [1.2, 0.5, 0.8],  # Flattened values
+            "sig": [0.3, 0.2, 0.4]
+        }
         """
-        mu_stats = {
-            layer: param.data.cpu().tolist() 
-            for layer, param in self.mu_dict.items()
-        }
-        sig_stats = {
-            layer: param.data.cpu().tolist()
-            for layer, param in self.sig_dict.items()
-        }
+        def flatten_stats(tensor):
+            """Flattens a tensor to 1D list, removing empty dimensions."""
+            return [float(x) for x in tensor.squeeze().cpu().numpy().ravel()]
 
         stats_dict = {
-            "mu": mu_stats,
-            "sig": sig_stats,
-            "count": self.count.cpu().tolist(),
-            "num_layers": self.num_layers,
-            "num_domains": self.num_domains,
-            "mode": self.mode
+            "domain_stats": {
+                str(domain_id): {
+                    "layers": [
+                        {
+                            "name": f"layer_{layer_idx}",
+                            "mu": flatten_stats(self.mu_dict[str(layer_idx)][domain_id]),
+                            "sig": flatten_stats(self.sig_dict[str(layer_idx)][domain_id])
+                        }
+                        for layer_idx in sorted(self.mu_dict.keys())
+                    ],
+                    "count": int(self.count[domain_id].item())
+                }
+                for domain_id in range(self.num_domains)
+            },
+            "metadata": {
+                "num_layers": self.num_layers,
+                "mode": self.mode
+            }
         }
 
         with open(filepath, "w") as f:
             json.dump(stats_dict, f, indent=2)
-            print(f"Style statistics saved to: {filepath}")
 
 
     @classmethod
