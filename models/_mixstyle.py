@@ -2,7 +2,7 @@ import random
 import torch
 import torch.nn as nn
 # from contextlib import contextmanager
-
+from ._styleextraction import StyleStatistics
 
 
 """
@@ -13,11 +13,16 @@ Code taken and slightly adapted from:
 
 class MixStyle(nn.Module):
     def __init__(
-            self,
-            p: float = 0.5,
-            alpha: float = 0.1,
-            eps: float = 1e-6,
-            mix: str = 'random'
+            self, 
+            p=0.5, 
+            alpha=0.5, 
+            eps=1e-5, 
+            mix='random',   # TODO wird das überhaupt noch gebraucht?
+            num_domains: int = 4, 
+            num_layers: int = 3,
+            style_mode="average",  # "average", "selective", "paired", "attention"
+            layer_config=None,     # Für "selective" oder "paired"
+            store_stats=True      # Ob Statistiken gespeichert werden sollen
     ):
         """
         Args:
@@ -33,6 +38,19 @@ class MixStyle(nn.Module):
         self.alpha = alpha
         self.mix = mix
         self._active = True
+        self.num_layers = num_layers
+        self.store_stats = store_stats
+
+        # StyleStatistics integration
+        if num_domains is not None and store_stats:
+            self.style_stats = StyleStatistics(
+                num_domains=num_domains,
+                num_layers=num_layers,
+                mode=style_mode,
+                layer_config=layer_config
+            )
+        else:
+            self.style_stats = None
 
     def __repr__(self):
         return f'MixStyle(p={self.p}, alpha={self.alpha}, eps={self.eps}, mix={self.mix})'
@@ -43,7 +61,7 @@ class MixStyle(nn.Module):
     def update_mix_method(self, mix='random'):
         self.mix = mix
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor, domain_labels: torch.Tensor = None, layer_idx: int = 0):
         if not self.training or not self._active:
             return x
 
@@ -58,14 +76,25 @@ class MixStyle(nn.Module):
         mu, sig = mu.detach(), sig.detach()
         x_normed = (x - mu) / sig
 
+        # save stats for the current layer (if active)
+        if domain_labels is not None and self.style_stats is not None:
+            for domain in torch.unique(domain_labels):
+                mask = domain_labels == domain
+                self.style_stats._update(
+                    domain_idx=domain_labels,
+                    layer_idx=layer_idx,
+                    mu=mu[mask],
+                    sig=sig[mask]
+                )
+
         lam = self.beta.sample((B, 1, 1, 1))
         lam = lam.to(x.device)
 
-        if self.mix == 'random':
+        if self.mix == 'random':        # TODO wird noch gebraucht?
             # random shuffle
             perm = torch.randperm(B)
 
-        elif self.mix == 'crossdomain':
+        elif self.mix == 'crossdomain': # TODO wird noch gebraucht?
             # split into two halves and swap the order
             perm = torch.arange(B - 1, -1, -1)  # inverse index
             perm_b, perm_a = perm.chunk(2)

@@ -11,7 +11,7 @@
  description = "MixStyle extension to explicitly store domain-specific style information during training to enable latent augmentation during inference time"
  readme = "README.md"
  license = "MIT"
- keywords = ["domain generalization", "mixstyle", "test time augmentation", "feature statistics", "latent augmentation"]
+ keywords = ["domain generalization", "mixstyle", "test time augmentation", "feature statistics", "latent augmentation", "style transfer"]
 
  [tool.setuptools]
  packages = ["mixstyle-TTA"]

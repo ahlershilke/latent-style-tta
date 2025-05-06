@@ -6,7 +6,7 @@ from ._mixstyle import MixStyle
 
 
 """
-Code taken from: 
+Code taken and slightly adapted from: 
  https://github.com/VoErik/domain-generalization/blob/main/domgen/model_training/_resnet.py
 """
 
@@ -34,9 +34,10 @@ class ResNet(nn.Module):
             block: Type[nn.Module],
             layers: list,
             num_classes: int,
+            num_domains: int,
             fc_dims=None,
             dropout_p=None,
-            use_mixstyle=False,
+            use_mixstyle=True,
             mixstyle_layers: list = [],
             mixstyle_p: float = 0.5,
             mixstyle_alpha: float = 0.3,
@@ -63,7 +64,14 @@ class ResNet(nn.Module):
 
         self.mixstyle = None
         if use_mixstyle:
-            self.mixstyle = MixStyle(p=mixstyle_p, alpha=mixstyle_alpha, mix='random')
+            self.mixstyle = MixStyle(
+                p=mixstyle_p, 
+                alpha=mixstyle_alpha, 
+                mix='random', 
+                num_domains=num_domains,
+                num_layers=len(mixstyle_layers),
+                store_stats=True
+            )
             print('Insert MixStyle after the following layers: {}'.format(mixstyle_layers))
         self.mixstyle_layers = mixstyle_layers
 
@@ -129,6 +137,7 @@ class ResNet(nn.Module):
     def _feature_extractor(
             self,
             x: Tensor,
+            domain_idx: int = None
     ) -> Tensor:
         """Pass through the ResNet-blocks."""
         x = self.conv1(x)
@@ -138,27 +147,28 @@ class ResNet(nn.Module):
 
         x = self.layer1(x)
         if 'layer1' in self.mixstyle_layers:
-            x = self.mixstyle(x)
+            x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=0)
 
         x = self.layer2(x)
         if 'layer2' in self.mixstyle_layers:
-            x = self.mixstyle(x)
+            x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=1)
 
         x = self.layer3(x)
         if 'layer3' in self.mixstyle_layers:
-            x = self.mixstyle(x)
+            x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=2)
 
         x = self.layer4(x)
         if 'layer4' in self.mixstyle_layers:
-            x = self.mixstyle(x)
+            x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=3)
 
         return x
 
     def forward(
             self,
-            x: Tensor
+            x: Tensor,
+            domain_idx: int = None
     ) -> Tensor:
-        out = self._feature_extractor(x)
+        out = self._feature_extractor(x, domain_idx=domain_idx)
 
         out = self.avgpool(out)
         v = out.view(out.size(0), -1)
@@ -166,6 +176,13 @@ class ResNet(nn.Module):
             v = self.fc(v)
         y = self.classifier(v)
         return y
+    
+    def get_style_stats(self):
+        """Returns the style statistics of the MixStyle module."""
+        if self.mixstyle is not None:
+            return self.mixstyle.style_stats
+        else:
+            raise AttributeError("MixStyle is not enabled in this model.")
 
 
 class BasicBlock (nn.Module):
@@ -323,45 +340,45 @@ def init_pretrained_weights(model, model_url):
     model.load_state_dict(model_dict)
 
 
-def resnet18(num_classes: int, **kwargs):
+def resnet18(num_classes: int, num_domains: int, **kwargs):
     model = ResNet(
-        BasicBlock, [2, 2, 2, 2], num_classes, **kwargs
+        BasicBlock, [2, 2, 2, 2], num_classes, num_domains, **kwargs
     )
     if kwargs.get('pretrained', False):
         init_pretrained_weights(model, model_urls['resnet18'])
     return model
 
 
-def resnet34(num_classes: int, pretrained: bool = True, **kwargs):
+def resnet34(num_classes: int, num_domains: int, pretrained: bool = True, **kwargs):
     model = ResNet(
-        BasicBlock, [3, 4, 6, 3], num_classes, **kwargs
+        BasicBlock, [3, 4, 6, 3], num_classes, num_domains, **kwargs
     )
     if pretrained:
         init_pretrained_weights(model, model_urls['resnet34'])
     return model
 
 
-def resnet50(num_classes: int, pretrained: bool = True, **kwargs):
+def resnet50(num_classes: int, num_domains: int, pretrained: bool = True, **kwargs):
     model = ResNet(
-        Bottleneck, [3, 4, 6, 3], num_classes, **kwargs
+        Bottleneck, [3, 4, 6, 3], num_classes, num_domains, **kwargs
     )
     if pretrained:
         init_pretrained_weights(model, model_urls['resnet50'])
     return model
 
 
-def resnet101(num_classes: int, pretrained: bool = True, **kwargs):
+def resnet101(num_classes: int, num_domains: int, pretrained: bool = True, **kwargs):
     model = ResNet(
-        Bottleneck, [3, 4, 23, 3], num_classes, **kwargs
+        Bottleneck, [3, 4, 23, 3], num_classes, num_domains, **kwargs
     )
     if pretrained:
         init_pretrained_weights(model, model_urls['resnet101'])
     return model
 
 
-def resnet152(num_classes: int, pretrained: bool = True, **kwargs):
+def resnet152(num_classes: int, num_domains: int, pretrained: bool = True, **kwargs):
     model = ResNet(
-        Bottleneck, [3, 8, 36, 3], num_classes, **kwargs
+        Bottleneck, [3, 8, 36, 3], num_classes, num_domains, **kwargs
     )
     if pretrained:
         init_pretrained_weights(model, model_urls['resnet152'])
