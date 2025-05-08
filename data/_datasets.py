@@ -213,6 +213,37 @@ class DomainDataset(MultiDomainDataset):
         img, label = self.data[domain_idx][sample_idx]
         
         return img, label, domain_idx
+    
+    def generate_train_datasets(self, val_ratio=0.2, stratify=True):
+        """
+        Args:
+            val_ratio: Fraction of data to use for validation (e.g., 0.2 = 20%).
+            stratify: If True, preserves class distribution in splits.
+        """
+        train_subsets = []
+        for dom in [d for i, d in enumerate(self.data) if i != self.test_domain]:
+            targets = dom.targets
+            train_idx, _ = train_test_split(
+                np.arange(len(targets)), 
+                test_size=val_ratio, 
+                stratify=targets if stratify else None,
+                random_state=42
+            )
+            train_subsets.append(Subset(dom, train_idx))
+        return ConcatDataset(train_subsets)
+    
+    def generate_val_dataset(self, val_ratio=0.2, stratify=True):
+        val_subsets = []
+        for dom in [d for i, d in enumerate(self.data) if i != self.test_domain]:
+            targets = dom.targets
+            _, val_idx = train_test_split(
+                np.arange(len(targets)), 
+                test_size=val_ratio, 
+                stratify=targets if stratify else None,
+                random_state=42
+            )
+            val_subsets.append(Subset(dom, val_idx))
+        return ConcatDataset(val_subsets)
 
 
 def get_dataset(
