@@ -9,16 +9,26 @@ import optuna.visualization as vis
 from optuna.trial import TrialState
 from optuna.pruners import MedianPruner
 from models import resnet18, resnet34, resnet50, resnet101
+from tqdm import tqdm
 
 
 class HP_Tuner:
-    def __init__(self, train_data, val_data, model_name, num_classes: int, num_domains: int):
+    def __init__(self, train_data, val_data, num_classes: int, num_domains: int, n_trials=50):
+        """
+        Initialize the Hyperparameter Tuner
+        
+        Args:
+            train_data: Training dataset
+            val_data: Validation dataset
+            num_classes: Number of output classes
+            num_domains: Number of domains
+            n_trials: Number of optimization trials
+        """
         self.train_data = train_data
         self.val_data = val_data
-        self.model_name = model_name
         self.num_classes = num_classes
         self.num_domains = num_domains
-        self.n_trials = 50  # Anzahl der Versuche für Optuna
+        self.n_trials = n_trials
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def create_model(self, trial):
@@ -34,6 +44,8 @@ class HP_Tuner:
         mixstyle_p = trial.suggest_float("mixstyle_p", 0.1, 0.9) if use_mixstyle else 0.0
         mixstyle_alpha = trial.suggest_float("mixstyle_alpha", 0.1, 0.5) if use_mixstyle else 0.0
     
+        dropout = trial.suggest_float("dropout", 0.0, 0.5)
+
         model_kwargs = {
             "num_classes": self.num_classes,
             "num_domains": self.num_domains,
@@ -41,6 +53,7 @@ class HP_Tuner:
             "mixstyle_layers": mixstyle_layers,
             "mixstyle_p": mixstyle_p,
             "mixstyle_alpha": mixstyle_alpha,
+            "dropout_p": dropout,
             "pretrained": True
         }
     
@@ -54,30 +67,28 @@ class HP_Tuner:
         return models[model_type]
 
     def objective(self, trial):
-        # Hyperparameter
-        lr = trial.suggest_float("lr", 1e-5, 1e-4, 1e-3, 1e-2, log=True)
+        lr = trial.suggest_float("lr", 1e-5, 1e-2, log=True)
         batch_size = trial.suggest_categorical("batch_size", [8, 16, 32, 64])
-    
-        # Modell und Gerät
+        weight_decay = trial.suggest_float("weight_decay", 1e-5, 1e-3, log=True)
+
         model = self.create_model(trial)
         device = self.device
         model.to(device)
     
-        # Optimierer
         optimizer_name = trial.suggest_categorical("optimizer", ["Adam", "SGD", "AdamW"])
         if optimizer_name == "Adam":
-            optimizer = optim.Adam(model.parameters(), lr=lr)
+            optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
         elif optimizer_name == "AdamW":
             optimizer = optim.AdamW(model.parameters(), lr=lr, 
                                 betas=(trial.suggest_float("beta1", 0.8, 0.99), trial.suggest_float("beta2", 0.9, 0.999)),
                                 eps=trial.suggest_float("eps", 1e-8, 1e-6),
-                                weight_decay=trial.suggest_float("weight_decay", 1e-5, 1e-3))
+                                weight_decay=weight_decay)
         else:
             optimizer = optim.SGD(model.parameters(), lr=lr, 
                                 momentum=trial.suggest_float("momentum", 0.1, 0.9),
-                                weight_decay=trial.suggest_float("weight_decay", 1e-5, 1e-3))
+                                weight_decay=weight_decay, 
+                                nesterov=trial.suggest_categorical("nesterov", [True, False]))
     
-        # Learning Rate Scheduler
         scheduler_type = trial.suggest_categorical("scheduler", ["StepLR", "ReduceLROnPlateau", "CosineAnnealing"])
         if scheduler_type == "StepLR":
             scheduler = optim.lr_scheduler.StepLR(
@@ -101,24 +112,21 @@ class HP_Tuner:
 
         criterion = nn.CrossEntropyLoss()
     
-        # Beispiel-Dataloader (mit Domain-Labels)
         train_loader = DataLoader(self.train_data, batch_size=batch_size, shuffle=True)
         val_loader = DataLoader(self.val_data, batch_size=batch_size)
 
-        # Training Loop
         best_accuracy = 0
         for epoch in range(20):
             model.train()
-            for inputs, labels, domain_idx in train_loader:  # Annahme: DataLoader gibt (input, label, domain_idx) zurück
+            for inputs, labels, domain_idx in train_loader:  # DataLoader returns (input, label, domain_idx)
                 inputs, labels, domain_idx = inputs.to(device), labels.to(device), domain_idx.to(device)
             
                 optimizer.zero_grad()
-                outputs = model(inputs, domain_idx)  # Wichtig: Domain-Index übergeben!
+                outputs = model(inputs, domain_idx)
                 loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
         
-            # Validation
             model.eval()
             correct = 0
             total = 0
@@ -135,16 +143,13 @@ class HP_Tuner:
             accuracy = correct / total
             val_loss /= len(val_loader)
         
-            # Scheduler Update
             if scheduler_type == "ReduceLROnPlateau":
                 scheduler.step(accuracy)
             else:
                 scheduler.step()
-        
-            # Berichte an Optuna
+    
             trial.report(accuracy, epoch)
-        
-            # Pruning
+    
             if trial.should_prune():
                 raise optuna.TrialPruned()
         
@@ -153,12 +158,40 @@ class HP_Tuner:
 
         return best_accuracy
     
+
+    def save_best_model(self, study, save_dir: str):
+        """Save the best model from the study."""
+        try:
+            best_model = self.create_model(study.best_trial)
+            best_model.to(self.device)
+        
+            model_path = f"{save_dir}/best_model.pth"
+            torch.save({
+                'model_state_dict': best_model.state_dict(),
+                'best_params': study.best_params,
+                'best_value': study.best_value
+            }, model_path)
+        
+            print(f"Best model saved to {model_path}")
+        except Exception as e:
+            print(f"Error saving best model: {str(e)}")
+    
+
     def run(self, save_dir: str = "results"):
         os.makedirs(save_dir, exist_ok=True)
     
         pruner = MedianPruner(n_startup_trials=5, n_warmup_steps=10)
         study = optuna.create_study(direction="maximize", pruner=pruner, sampler=optuna.samplers.TPESampler())
-        study.optimize(self.objective, n_trials=self.n_trials)
+        
+        with tqdm(total=self.n_trials, desc="Hyperparameter-Tuning", unit="trial") as pbar:
+            def update_pbar(study, trial):
+                pbar.update(1)
+                pbar.set_postfix({
+                    "best_acc": f"{study.best_value:.4f}",
+                    "current_acc": f"{trial.value:.4f}" if trial.value else "None"
+                })
+        
+            study.optimize(self.objective, n_trials=self.n_trials, callbacks=[update_pbar])
 
         best_params = study.best_params
         with open(f"{save_dir}/best_params.json", "w") as f:
@@ -171,7 +204,6 @@ class HP_Tuner:
         print(f"- best_params.json (best hyperparams)")
         print(f"- all_trials.csv (all trials)")
 
-        # Visualisierung
         try:
             fig1 = vis.plot_optimization_history(study)
             fig2 = vis.plot_param_importances(study)
