@@ -242,11 +242,11 @@ class HP_Tuner:
         print(f"- all_trials.csv (all trials)")
 
         try:
-            fig1 = vis.plot_optimization_history(study)
-            fig1.write_html(f"{save_dir}/optimization_history.html")
             if len(study.trials) > 1:
-                fig2 = vis.plot_param_importances(study)
-                fig2.write_html(f"{save_dir}/param_importances.html")
+                fig1 = vis.plot_param_importances(study)
+                fig1.write_html(f"{save_dir}/param_importances.html")
+            fig2 = vis.plot_optimization_history(study)
+            fig2.write_html(f"{save_dir}/optimization_history.html")
         except ImportError:
             print("Optuna Visualisation not available.")
 
