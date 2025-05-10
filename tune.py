@@ -1,11 +1,11 @@
 import argparse
 import os
 from models.tuning import HP_Tuner 
-from data import get_train_val_datasets
+from data._load_data import get_train_val_datasets
 
 def main():
     train_data, val_data = get_train_val_datasets()
-    num_classes = len(train_data.dataset.classes)
+    num_classes = 7
     num_domains = 4
     
     tuner = HP_Tuner(

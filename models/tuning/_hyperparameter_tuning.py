@@ -34,13 +34,32 @@ class HP_Tuner:
     def create_model(self, trial):
         model_type = trial.suggest_categorical("model_type", ["resnet18", "resnet34", "resnet50", "resnet101"])
     
-        use_mixstyle = trial.suggest_categorical("use_mixstyle", [True, False])
-        mixstyle_layers = trial.suggest_categorical("mixstyle_layers", 
-                                [["layer1"], ["layer2"], ["layer3"], ["layer4"], 
-                                ["layer1", "layer2"], ["layer1", "layer2", "layer3"], 
-                                ["layer1", "layer3"], ["layer2", "layer3"], 
-                                ["layer1", "layer2", "layer3", "layer4"], ["layer1", "layer2", "layer4"],
-                                ["layer1", "layer3", "layer4"], ["layer2", "layer3", "layer4"], []])
+        #use_mixstyle = trial.suggest_categorical("use_mixstyle", [True, False])
+        use_mixstyle = True
+
+        if use_mixstyle:
+            mixstyle_layers = trial.suggest_categorical("mixstyle_layers", [
+                "layer1", "layer2", "layer3", "layer4",
+                "layer1+layer2", "layer1+layer2+layer3", "layer1+layer3",
+                "layer2+layer3", "all", "none"])
+            mixstyle_p = trial.suggest_float("mixstyle_p", 0.1, 0.9) if use_mixstyle else 0.0
+            mixstyle_alpha = trial.suggest_float("mixstyle_alpha", 0.1, 0.5) if use_mixstyle else 0.0
+        else:
+            mixstyle_layers = []
+            mixstyle_p = 0.0
+            mixstyle_alpha = 0.0
+            mixstyle_layers = trial.suggest_categorical("mixstyle_layers", [
+                "layer1", "layer2", "layer3", "layer4",
+                "layer1+2", "layer1+2+3", "layer1+3",
+                "layer2+3", "all", "none"])
+        
+        if mixstyle_layers == "all":
+            actual_layers = ["layer1", "layer2", "layer3", "layer4"]
+        elif mixstyle_layers == "none":
+            actual_layers = []
+        else:
+            actual_layers = mixstyle_layers.split("+")
+
         mixstyle_p = trial.suggest_float("mixstyle_p", 0.1, 0.9) if use_mixstyle else 0.0
         mixstyle_alpha = trial.suggest_float("mixstyle_alpha", 0.1, 0.5) if use_mixstyle else 0.0
     
@@ -50,7 +69,7 @@ class HP_Tuner:
             "num_classes": self.num_classes,
             "num_domains": self.num_domains,
             "use_mixstyle": use_mixstyle,
-            "mixstyle_layers": mixstyle_layers,
+            "mixstyle_layers": actual_layers,
             "mixstyle_p": mixstyle_p,
             "mixstyle_alpha": mixstyle_alpha,
             "dropout_p": dropout,
@@ -112,8 +131,26 @@ class HP_Tuner:
 
         criterion = nn.CrossEntropyLoss()
     
-        train_loader = DataLoader(self.train_data, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(self.val_data, batch_size=batch_size)
+        def collate_fn(batch):
+            imgs = torch.stack([item[0] for item in batch])
+            labels = torch.tensor([item[1] for item in batch])
+            domains = torch.tensor([item[2] for item in batch])
+            return imgs, labels, domains
+
+        train_loader = DataLoader(
+            self.train_data,
+            batch_size=batch_size,
+            shuffle=True,
+            drop_last=True,
+            collate_fn=collate_fn
+        )
+    
+        val_loader = DataLoader(
+            self.val_data,
+            batch_size=batch_size,
+            shuffle=False,
+            collate_fn=collate_fn
+        )
 
         best_accuracy = 0
         for epoch in range(20):
@@ -206,7 +243,8 @@ class HP_Tuner:
 
         try:
             fig1 = vis.plot_optimization_history(study)
-            fig2 = vis.plot_param_importances(study)
+            if len(study.trials) > 1:
+                fig2 = vis.plot_param_importances(study)
             fig1.write_html(f"{save_dir}/optimization_history.html")
             fig2.write_html(f"{save_dir}/param_importances.html")
         except ImportError:

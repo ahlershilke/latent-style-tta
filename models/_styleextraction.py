@@ -93,15 +93,29 @@ class StyleStatistics(nn.Module):
         """Update statistics for given domain and layer with mode-specific rules"""
         if not self._should_update_layer(layer_idx):
             return
-    
-        mu = mu.squeeze(-1).squeeze(-1)  # shape: [B, C]
-        sig = sig.squeeze(-1).squeeze(-1)  # shape: [B, C]
-    
+
+        mu = mu.squeeze(-1).squeeze(-1)  # [B, C]
+        sig = sig.squeeze(-1).squeeze(-1)  # [B, C]
+
+        B = mu.shape[0]
+
+        if not isinstance(domain_idx, torch.Tensor):
+            domain_idx = torch.tensor(domain_idx, device=mu.device)
+
+        # domain_idx must match batch size of mu/sig
+        if domain_idx.shape[0] != B:
+            raise ValueError(
+                f"Mismatch in batch size: domain_idx.shape[0] = {domain_idx.shape[0]}, "
+                f"but mu.shape[0] = {B}. Ensure domain labels match the features."
+            )
+
         for d in domain_idx.unique():
             mask = domain_idx == d
+            if mask.sum() == 0:
+                continue
             mu_mean = mu[mask].mean(dim=0)
             sig_mean = sig[mask].mean(dim=0)
-        
+
             if self.use_ema:
                 self._ema_update(d.item(), layer_idx, mu_mean, sig_mean)
             else:

@@ -146,19 +146,19 @@ class ResNet(nn.Module):
         x = self.maxpool(x)
 
         x = self.layer1(x)
-        if 'layer1' in self.mixstyle_layers:
+        if self.mixstyle is not None and 'layer1' in self.mixstyle_layers:
             x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=0)
 
         x = self.layer2(x)
-        if 'layer2' in self.mixstyle_layers:
+        if self.mixstyle is not None and 'layer2' in self.mixstyle_layers:
             x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=1)
 
         x = self.layer3(x)
-        if 'layer3' in self.mixstyle_layers:
+        if self.mixstyle is not None and 'layer3' in self.mixstyle_layers:
             x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=2)
 
         x = self.layer4(x)
-        if 'layer4' in self.mixstyle_layers:
+        if self.mixstyle is not None and 'layer4' in self.mixstyle_layers:
             x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=3)
 
         return x

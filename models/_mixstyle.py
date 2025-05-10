@@ -61,7 +61,15 @@ class MixStyle(nn.Module):
     def update_mix_method(self, mix='random'):
         self.mix = mix
 
+    """
     def forward(self, x: torch.Tensor, domain_labels: torch.Tensor = None, layer_idx: int = 0):
+        if domain_labels is not None and domain_labels.shape[0] != x.shape[0]:
+            raise RuntimeError(
+                f"Critical shape mismatch: x={x.shape}, domains={domain_labels.shape}\n"
+                f"Layer: {layer_idx}, Training: {self.training}\n"
+                f"Possible data loader issue or model architecture problem."
+            )
+        
         if not self.training or not self._active:
             return x
 
@@ -109,6 +117,41 @@ class MixStyle(nn.Module):
         mu_mix = mu * lam + mu2 * (1 - lam)
         sig_mix = sig * lam + sig2 * (1 - lam)
 
+        return x_normed * sig_mix + mu_mix
+    """
+
+    def forward(self, x: torch.Tensor, domain_labels=None, layer_idx=0):
+        if not self.training or not self._active:
+            return x
+        
+        # Input validation
+        if domain_labels is not None:
+            assert x.shape[0] == domain_labels.shape[0], \
+                f"Batch size mismatch: x={x.shape}, domains={domain_labels.shape}"
+    
+        B, C, H, W = x.shape
+        if random.random() > self.p or B < 2:  # Skip if batch too small
+            return x
+
+        # Original MixStyle Logic mit sicherer Implementierung
+        mu = x.view(B, C, -1).mean(dim=2).view(B, C, 1, 1)
+        var = x.view(B, C, -1).var(dim=2).view(B, C, 1, 1)
+        sig = (var + self.eps).sqrt()
+    
+        # Sicherstellen dass wir nicht versehentlich B ändern
+        x_normed = (x - mu.detach()) / sig.detach()
+    
+        # Stats tracking nur wenn shapes passen
+        if domain_labels is not None and self.style_stats is not None:
+            if domain_labels.shape[0] == B:  # Double-check
+                self.style_stats._update(domain_labels, layer_idx, mu, sig)
+    
+        # Mixing mit shape checks
+        lam = self.beta.sample((B, 1, 1, 1)).to(x.device)
+        perm = torch.randperm(B)
+        mu_mix = mu * lam + mu[perm] * (1 - lam)
+        sig_mix = sig * lam + sig[perm] * (1 - lam)
+    
         return x_normed * sig_mix + mu_mix
 
 

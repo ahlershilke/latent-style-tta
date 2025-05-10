@@ -13,7 +13,7 @@ from torch.utils.data import Subset, ConcatDataset
 
 batch_size = 32
 learning_rate = 0.001
-num_epochs = 1
+num_epochs = 10
 num_classes = 7
 num_domains = 4
 
@@ -26,7 +26,7 @@ transform = transforms.Compose([
 
 # data (for test run)
 #full_dataset = datasets.ImageFolder(root="data/datasets/PACS", transform=transform)
-full_dataset = PACS(root="data/datasets", test_domain=None, augment=None)
+full_dataset = PACS(root="/mnt/data/hahlers/datasets", test_domain=None, augment=None)
 
 """
 subset_size = int(0.3 * len(full_dataset))

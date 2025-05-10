@@ -24,6 +24,15 @@ DOMAIN_NAMES = {
     #'camelyon17': ["center_0", "center_1", "center_2", "center_3", "center_4"],
 }
 
+class DomainSubset(Subset):
+    """Wraps a dataset and adds domain index to the output."""
+    def __init__(self, dataset, indices, domain_idx):
+        super().__init__(dataset, indices)
+        self.domain_idx = domain_idx
+    
+    def __getitem__(self, idx):
+        img, label = super().__getitem__(idx)
+        return img, label, self.domain_idx
 
 class MultiDomainDataset:
     domains = None
@@ -214,37 +223,38 @@ class DomainDataset(MultiDomainDataset):
         
         return img, label, domain_idx
     
-    def generate_train_datasets(self, val_ratio=0.2, stratify=True):
+    def generate_train_dataset(self, val_ratio=0.2, stratify=True):
         """
         Args:
             val_ratio: Fraction of data to use for validation (e.g., 0.2 = 20%).
             stratify: If True, preserves class distribution in splits.
         """
         train_subsets = []
-        for dom in [d for i, d in enumerate(self.data) if i != self.test_domain]:
+        for domain_idx, dom in enumerate([d for i, d in enumerate(self.data) if i != self.test_domain]):
             targets = dom.targets
             train_idx, _ = train_test_split(
-                np.arange(len(targets)), 
-                test_size=val_ratio, 
+                np.arange(len(targets)),
+                test_size=val_ratio,
                 stratify=targets if stratify else None,
                 random_state=42
             )
-            train_subsets.append(Subset(dom, train_idx))
+            train_subsets.append(DomainSubset(dom, train_idx, domain_idx))
+        
         return ConcatDataset(train_subsets)
     
     def generate_val_dataset(self, val_ratio=0.2, stratify=True):
         val_subsets = []
-        for dom in [d for i, d in enumerate(self.data) if i != self.test_domain]:
+        for domain_idx, dom in enumerate([d for i, d in enumerate(self.data) if i != self.test_domain]):
             targets = dom.targets
             _, val_idx = train_test_split(
-                np.arange(len(targets)), 
-                test_size=val_ratio, 
+                np.arange(len(targets)),
+                test_size=val_ratio,
                 stratify=targets if stratify else None,
                 random_state=42
             )
-            val_subsets.append(Subset(dom, val_idx))
+            val_subsets.append(DomainSubset(dom, val_idx, domain_idx))
+        
         return ConcatDataset(val_subsets)
-
 
 def get_dataset(
         name: str,

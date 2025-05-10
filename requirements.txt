@@ -8,3 +8,4 @@ pandas
 gdown
 seaborn
 optuna
+plotly
