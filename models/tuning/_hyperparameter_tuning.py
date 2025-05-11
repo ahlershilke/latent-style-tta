@@ -195,9 +195,9 @@ class HP_Tuner:
 
         return best_accuracy
     
-
+    """
     def save_best_model(self, study, save_dir: str):
-        """Save the best model from the study."""
+        #Save the best model from the study.
         try:
             best_model = self.create_model(study.best_trial)
             best_model.to(self.device)
@@ -212,6 +212,40 @@ class HP_Tuner:
             print(f"Best model saved to {model_path}")
         except Exception as e:
             print(f"Error saving best model: {str(e)}")
+    """
+
+    def save_best_models(self, study, save_dir: str, top_k: int = 5):
+        """Save the top-k best models from the study."""
+        try:
+            completed_trials = [t for t in study.trials if t.state == TrialState.COMPLETE]
+            sorted_trials = sorted(completed_trials, key=lambda x: x.value, reverse=True)
+        
+            num_models_to_save = min(top_k, len(sorted_trials))
+        
+            for i in range(num_models_to_save):
+                trial = sorted_trials[i]
+                model = self.create_model(trial)
+                model.to(self.device)
+            
+                model_path = f"{save_dir}/top_{i+1}_model.pth"
+                torch.save({
+                    'model_state_dict': model.state_dict(),
+                    'params': trial.params,
+                    'value': trial.value,
+                    'rank': i+1
+                }, model_path)
+    
+                params_path = f"{save_dir}/top_{i+1}_params.json"
+                with open(params_path, "w") as f:
+                    json.dump({
+                        'params': trial.params,
+                        'value': trial.value,
+                        'rank': i+1
+                    }, f, indent=4)
+        
+            print(f"Saved top {num_models_to_save} models to {save_dir}")
+        except Exception as e:
+            print(f"Error saving best models: {str(e)}")
     
 
     def run(self, save_dir: str = "results"):
@@ -230,9 +264,7 @@ class HP_Tuner:
         
             study.optimize(self.objective, n_trials=self.n_trials, callbacks=[update_pbar])
 
-        best_params = study.best_params
-        with open(f"{save_dir}/best_params.json", "w") as f:
-            json.dump(best_params, f, indent=4)
+        self.save_best_models(study, save_dir, top_k=5)
     
         trials_df = study.trials_dataframe()
         trials_df.to_csv(f"{save_dir}/all_trials.csv", index=False)
