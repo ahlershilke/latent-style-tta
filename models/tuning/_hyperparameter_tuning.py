@@ -1,5 +1,6 @@
 import os
 import json
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -12,8 +13,53 @@ from models import resnet18, resnet34, resnet50, resnet101
 from tqdm import tqdm
 
 
+class EarlyStopping:
+    """Early stops the training if validation loss doesn't improve after a given patience."""
+    def __init__(self, 
+                 patience=3, 
+                 delta=0.001, 
+                 verbose=False, 
+                 path='checkpoint.pt', 
+                 trace_func=print
+                 ):
+        self.patience = patience
+        self.delta = delta
+        self.verbose = verbose
+        self.path = path
+        self.trace_func = trace_func
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.val_loss_min = float('inf')
+
+    def __call__(self, val_loss, model):
+        score = -val_loss
+
+        if self.best_score is None:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            if self.verbose:
+                self.trace_func(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+            self.counter = 0
+
+    def save_checkpoint(self, val_loss, model):
+        '''Saves model when validation loss decreases.'''
+        if self.verbose:
+            self.trace_func(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}). Saving model...')
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        torch.save(model.state_dict(), self.path)
+        self.val_loss_min = val_loss
+
+
 class HP_Tuner:
-    def __init__(self, train_data, val_data, num_classes: int, num_domains: int, n_trials=50):
+    def __init__(self, train_data, val_data, num_classes: int, num_domains: int, n_trials=50, save_dir="experiments/hp_results"):
         """
         Initialize the Hyperparameter Tuner
         
@@ -30,28 +76,18 @@ class HP_Tuner:
         self.num_domains = num_domains
         self.n_trials = n_trials
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.save_dir = save_dir
 
     def create_model(self, trial):
         model_type = trial.suggest_categorical("model_type", ["resnet18", "resnet34", "resnet50", "resnet101"])
     
-        #use_mixstyle = trial.suggest_categorical("use_mixstyle", [True, False])
         use_mixstyle = True
-
-        if use_mixstyle:
-            mixstyle_layers = trial.suggest_categorical("mixstyle_layers", [
+        mixstyle_layers = trial.suggest_categorical("mixstyle_layers", [
                 "layer1", "layer2", "layer3", "layer4",
                 "layer1+layer2", "layer1+layer2+layer3", "layer1+layer3",
                 "layer2+layer3", "all", "none"])
-            mixstyle_p = trial.suggest_float("mixstyle_p", 0.1, 0.9) if use_mixstyle else 0.0
-            mixstyle_alpha = trial.suggest_float("mixstyle_alpha", 0.1, 0.5) if use_mixstyle else 0.0
-        else:
-            mixstyle_layers = []
-            mixstyle_p = 0.0
-            mixstyle_alpha = 0.0
-            mixstyle_layers = trial.suggest_categorical("mixstyle_layers", [
-                "layer1", "layer2", "layer3", "layer4",
-                "layer1+2", "layer1+2+3", "layer1+3",
-                "layer2+3", "all", "none"])
+        mixstyle_p = trial.suggest_float("mixstyle_p", 0.1, 0.9) if use_mixstyle else 0.0
+        mixstyle_alpha = trial.suggest_float("mixstyle_alpha", 0.1, 0.5) if use_mixstyle else 0.0
         
         if mixstyle_layers == "all":
             actual_layers = ["layer1", "layer2", "layer3", "layer4"]
@@ -152,6 +188,14 @@ class HP_Tuner:
             collate_fn=collate_fn
         )
 
+        early_stopper = EarlyStopping(
+            patience=3, 
+            delta=0.001,
+            verbose=True,
+            path=os.path.join(self.save_dir, "checkpoints", f"checkpoint_trial_{trial.number}.pt"),
+            trace_func=print
+    )
+
         best_accuracy = 0
         for epoch in range(20):
             model.train()
@@ -179,6 +223,11 @@ class HP_Tuner:
         
             accuracy = correct / total
             val_loss /= len(val_loader)
+
+            early_stopper(val_loss, model)  # ODER early_stopper(-accuracy, model)
+            if early_stopper.early_stop:
+                print(f"Early stopping triggered at epoch {epoch}")
+                break
         
             if scheduler_type == "ReduceLROnPlateau":
                 scheduler.step(accuracy)
@@ -192,6 +241,8 @@ class HP_Tuner:
         
             if accuracy > best_accuracy:
                 best_accuracy = accuracy
+
+            self.log_trial_result(trial, accuracy)
 
         return best_accuracy
     
@@ -215,41 +266,63 @@ class HP_Tuner:
     """
 
     def save_best_models(self, study, save_dir: str, top_k: int = 5):
-        """Save the top-k best models from the study."""
+        """Save the top-k best models from the study with organized folder structure."""
         try:
+            base_dir = os.path.join(save_dir, "hp_results")
+            models_dir = os.path.join(base_dir, "models")
+            params_dir = os.path.join(base_dir, "params")
+            checkpoints_dir = os.path.join(self.save_dir, "checkpoints")
+        
+            os.makedirs(models_dir, exist_ok=True)
+            os.makedirs(params_dir, exist_ok=True)
+            os.makedirs(checkpoints_dir, exist_ok=True)
+
             completed_trials = [t for t in study.trials if t.state == TrialState.COMPLETE]
             sorted_trials = sorted(completed_trials, key=lambda x: x.value, reverse=True)
-        
+    
             num_models_to_save = min(top_k, len(sorted_trials))
-        
+    
             for i in range(num_models_to_save):
                 trial = sorted_trials[i]
                 model = self.create_model(trial)
                 model.to(self.device)
-            
-                model_path = f"{save_dir}/top_{i+1}_model.pth"
+        
+                model_path = os.path.join(models_dir, f"top_{i+1}_model.pth")
                 torch.save({
                     'model_state_dict': model.state_dict(),
                     'params': trial.params,
                     'value': trial.value,
                     'rank': i+1
                 }, model_path)
-    
-                params_path = f"{save_dir}/top_{i+1}_params.json"
+
+                params_path = os.path.join(params_dir, f"top_{i+1}_params.json")
                 with open(params_path, "w") as f:
                     json.dump({
                         'params': trial.params,
                         'value': trial.value,
                         'rank': i+1
                     }, f, indent=4)
-        
-            print(f"Saved top {num_models_to_save} models to {save_dir}")
+    
+            print(f"Saved top {num_models_to_save} models to {models_dir}")
+            print(f"Saved parameters to {params_dir}")
         except Exception as e:
             print(f"Error saving best models: {str(e)}")
+
+    def log_trial_result(self, trial, val_acc):
+        if not os.path.exists("experiments/hp_results/optuna_results.csv"):
+            pd.DataFrame(columns=['lr', 'batch_size', 'epochs', 'arch',
+                                   'mixstyle', 'val_acc']).to_csv("optuna_results.csv", index=False)
+        
+        trial_data = trial.params.copy()
+        trial_data['val_acc'] = val_acc
+        df = pd.DataFrame([trial_data])
+        csv_path = 'optuna_results.csv'
+        df.to_csv(csv_path, mode='a', header=not os.path.exists(csv_path), index=False)
     
 
-    def run(self, save_dir: str = "results"):
-        os.makedirs(save_dir, exist_ok=True)
+    def run(self, save_dir: str = "experiments"):
+        os.makedirs(os.path.join(save_dir, "hp_results"), exist_ok=True)
+        os.makedirs(os.path.join(self.save_dir, "checkpoints"), exist_ok=True)
     
         pruner = MedianPruner(n_startup_trials=5, n_warmup_steps=10)
         study = optuna.create_study(direction="maximize", pruner=pruner, sampler=optuna.samplers.TPESampler())
