@@ -20,7 +20,6 @@ def get_train_val_datasets():
     return train_dataset, val_dataset, test_data
 """
 
-from data._datasets import get_dataset
 
 def get_train_val_datasets():
     test_domain_name = 'photo'
@@ -45,3 +44,14 @@ def get_train_val_datasets():
     )
 
     return train_dataset, val_dataset, test_data
+
+
+def get_lodo_splits():
+    """Returns a list of datasets for Leave-One-Domain-Out (LoDO) cross-validation."""
+    dataset = get_dataset(
+        name='PACS',
+        root_dir='/mnt/data/hahlers/datasets',
+        test_domain=None,
+        augment=None
+    )
+    return dataset.generate_lodo_splits()

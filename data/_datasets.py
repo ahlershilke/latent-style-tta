@@ -296,63 +296,6 @@ class DomainDataset(MultiDomainDataset):
         
         return img, label, domain_idx
     
-    """
-    def generate_train_dataset(self, val_ratio=0.2, stratify=True):
-        
-        #Args:
-         #   val_ratio: Fraction of data to use for validation (e.g., 0.2 = 20%).
-          #  stratify: If True, preserves class distribution in splits.
-        
-        train_subsets = []
-        for domain_idx, dom in enumerate([d for i, d in enumerate(self.data) if i != self.test_domain]):
-            targets = dom.targets
-            train_idx, _ = train_test_split(
-                np.arange(len(targets)),
-                test_size=val_ratio,
-                stratify=targets if stratify else None,
-                random_state=42
-            )
-            train_subsets.append(DomainSubset(dom, train_idx, domain_idx))
-        
-        return ConcatDataset(train_subsets)
-    
-    def generate_val_dataset(self, val_ratio=0.2, stratify=True):
-        val_subsets = []
-        for domain_idx, dom in enumerate([d for i, d in enumerate(self.data) if i != self.test_domain]):
-            targets = dom.targets
-            _, val_idx = train_test_split(
-                np.arange(len(targets)),
-                test_size=val_ratio,
-                stratify=targets if stratify else None,
-                random_state=42
-            )
-            val_subsets.append(DomainSubset(dom, val_idx, domain_idx))
-        
-        return ConcatDataset(val_subsets)
-    
-
-    def generate_train_val_datasets(self, val_ratio=0.2, stratify=True):
-        
-        #Generates train and validation datasets for all domains except the test domain.
-        #:param val_ratio: Fraction of data to use for validation (e.g., 0.2 = 20%).
-        #:param stratify: If True, preserves class distribution in splits.       
-        #:return: A tuple of (train_dataset, val_dataset).
-        
-        train_subsets = []
-        val_subsets = []
-        for domain_idx, dom in enumerate([d for i, d in enumerate(self.data) if i != self.test_domain]):
-            targets = dom.targets
-            train_idx, val_idx = train_test_split(
-                np.arange(len(targets)),
-                test_size=val_ratio,
-                stratify=targets if stratify else None,
-                random_state=42
-            )
-            train_subsets.append(DomainSubset(dom, train_idx, domain_idx))
-            val_subsets.append(DomainSubset(dom, val_idx, domain_idx))
-    
-        return ConcatDataset(train_subsets), ConcatDataset(val_subsets)
-    """
 
     def generate_train_val_datasets(self, val_ratio=0.2, stratify=True):
         """
@@ -387,6 +330,53 @@ class DomainDataset(MultiDomainDataset):
 
         return ConcatDataset(train_subsets), ConcatDataset(val_subsets)
 
+
+    def generate_lodo_splits(self):
+        """Generates Leave-One-Domain-Out splits with consistent domain indices."""
+        splits = []
+    
+        for test_domain_idx in range(len(self.domains)):
+            # 1. Bestimme Trainingsdomains (alle außer test_domain_idx)
+            train_domains = [i for i in range(len(self.domains)) if i != test_domain_idx]
+        
+            # 2. Erstelle Mapping: originaler Index -> neuer fortlaufender Index (0..N-1)
+            domain_idx_mapping = {orig_idx: new_idx for new_idx, orig_idx in enumerate(train_domains)}
+            test_domain_new_idx = len(train_domains)  # Test-Domain bekommt nächsten Index
+
+            # 3. Erstelle Train/Val-Subsets mit neuen Indizes
+            train_subsets, val_subsets = [], []
+            for orig_domain_idx in train_domains:
+                domain_data = self.data[orig_domain_idx]
+                targets = domain_data.targets
+            
+                # Train/Val-Split
+                train_idx, val_idx = train_test_split(
+                    np.arange(len(targets)),
+                    test_size=0.2,
+                    random_state=42,
+                    stratify=targets
+                )
+            
+                # Wende neues domain_idx-Mapping an
+                new_domain_idx = domain_idx_mapping[orig_domain_idx]
+                train_subsets.append(DomainSubset(domain_data, train_idx, new_domain_idx))
+                val_subsets.append(DomainSubset(domain_data, val_idx, new_domain_idx))
+
+            # 4. Test-Domain mit konsistentem Index
+            test_data = []
+            test_data.append(DomainSubset(
+                self.data[test_domain_idx],
+                indices=list(range(len(self.data[test_domain_idx]))),
+                domain_idx=test_domain_new_idx
+            ))
+
+            splits.append((
+                ConcatDataset(train_subsets),  # Train
+                ConcatDataset(val_subsets),    # Val
+                ConcatDataset(test_data)                      # Test
+            ))
+    
+        return splits
 
 
 def get_dataset(
