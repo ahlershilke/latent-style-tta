@@ -98,7 +98,7 @@ class MixStyle(nn.Module):
         lam = self.beta.sample((B, 1, 1, 1))
         lam = lam.to(x.device)
 
-        if self.mix == 'random':        # TODO wird noch gebraucht?
+        if self.mix == 'random':        
             # random shuffle
             perm = torch.randperm(B)
 
@@ -148,7 +148,7 @@ class MixStyle(nn.Module):
     
         # Mixing mit shape checks
         lam = self.beta.sample((B, 1, 1, 1)).to(x.device)
-        perm = torch.randperm(B)
+        perm = torch.randperm(B)    # random mixing!
         mu_mix = mu * lam + mu[perm] * (1 - lam)
         sig_mix = sig * lam + sig[perm] * (1 - lam)
     

@@ -8,33 +8,48 @@ import optuna
 
 
 def analyze_and_visualize_studies(all_studies, save_dir):
-    # Sicherstellen, dass das Verzeichnis existiert
+    """
+    Analyze and visualize results from multiple Optuna studies.
+    Args:
+        all_studies (List[optuna.Study]): List of Optuna study objects.
+        save_dir (str): Directory to save the results and visualizations.
+    """
     os.makedirs(save_dir, exist_ok=True)
 
-    # 1. Datensammlung für alle Studien
     all_results = []
     param_importance_aggregated = {}
     
+    all_param_keys = [
+        'lr', 'batch_size', 'weight_decay', 'optimizer', 'scheduler', 'dropout',
+        'mixstyle_layers', 'mixstyle_p', 'mixstyle_alpha', 'beta1', 'beta2',
+        'momentum', 'eps', 'nesterov', 'step_size', 'T_max', 'eta_min', 'factor',
+        'patience', 'gamma'
+    ]
+    
     for study in all_studies:
-        # Metadaten und beste Trial-Ergebnisse sammeln
         best_trial = study.best_trial
-        all_results.append({
+
+        trial_dict = {
             "fold": study.user_attrs.get("fold", "N/A"),
             "test_domain": study.user_attrs.get("test_domain", "N/A"),
             "best_accuracy": best_trial.value,
-            **best_trial.params
-        })
+        }
+
+        for key in all_param_keys:
+            trial_dict[key] = best_trial.params.get(key, None)
+
+        all_results.append(trial_dict)
         
-        # Parameter-Importances aggregieren
+        # aggregate parameter importances
         for param, importance in optuna.importance.get_param_importances(study).items():
             param_importance_aggregated[param] = param_importance_aggregated.get(param, 0) + importance
 
-    # Normalisierung der Importances
+    # normalize parameter importances
     total_importance = sum(param_importance_aggregated.values())
     param_importance_normalized = {k: v / total_importance for k, v in param_importance_aggregated.items()}
 
-    # 2. Visualisierungen (Plotly)
-    # a) Optimization History (Alle Folds überlagert)
+    # 2. Visualization (Plotly)
+    # a) Optimization History (all folds)
     fig_history = make_subplots()
     for i, study in enumerate(all_studies):
         df = study.trials_dataframe()
@@ -53,7 +68,7 @@ def analyze_and_visualize_studies(all_studies, save_dir):
     )
     fig_history.write_html(os.path.join(save_dir, "global_optimization_history.html"))
 
-    # b) Parameter Importances (Aggregiert)
+    # b) Parameter Importances (aggregated across all folds)
     fig_importance = go.Figure(go.Bar(
         x=list(param_importance_normalized.values()),
         y=list(param_importance_normalized.keys()),
@@ -68,35 +83,13 @@ def analyze_and_visualize_studies(all_studies, save_dir):
     )
     fig_importance.write_html(os.path.join(save_dir, "global_param_importances.html"))
 
-    # 3. Statistische Auswertung (CSV + JSON)
-    # a) CSV mit allen Ergebnissen
+    # 3. Statistical Summary
+    # a) CSV
     df_results = pd.DataFrame(all_results)
     csv_path = os.path.join(save_dir, "global_best_trials.csv")
     df_results.to_csv(csv_path, index=False)
 
-    # b) JSON-Zusammenfassung
-    """
-    summary_stats = {
-        "accuracy": {
-            "mean": float(df_results["best_accuracy"].mean()),
-            "std": float(df_results["best_accuracy"].std()),
-            "min": float(df_results["best_accuracy"].min()),
-            "max": float(df_results["best_accuracy"].max()),
-            "median": float(df_results["best_accuracy"].median())
-        },
-        "best_overall_params": dict(df_results.iloc[df_results["best_accuracy"].idxmax()]),
-        "most_common_best_params": {
-            #"model_type": df_results["model_type"].mode()[0],
-            "optimizer": df_results["optimizer"].mode()[0],
-            "lr_median": float(df_results["lr"].median())
-        }
-    }
-    
-    json_path = os.path.join(save_dir, "global_summary.json")
-    with open(json_path, "w") as f:
-        json.dump(summary_stats, f, indent=2, default=convert_to_serializable)
-    """
-
+    # b) JSON
     summary_df = pd.DataFrame([{
         "accuracy_mean": float(df_results["best_accuracy"].mean()),
         "accuracy_std": float(df_results["best_accuracy"].std()),

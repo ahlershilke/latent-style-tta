@@ -228,7 +228,7 @@ class HP_Tuner:
             accuracy = correct / total
             val_loss /= len(val_loader)
 
-            early_stopper(val_loss, model)  # ODER early_stopper(-accuracy, model)
+            early_stopper(val_loss, model)  # OR early_stopper(-accuracy, model)
             if early_stopper.early_stop:
                 print(f"Early stopping triggered at epoch {epoch}")
                 break
@@ -337,25 +337,27 @@ class HP_Tuner:
 
         clean_params = {k.replace('params_', ''): v for k, v in trial.params.items()}
 
-        all_possible_params = [
-            'lr', 'batch_size', 'weight_decay', 'optimizer', 
-            'beta1', 'beta2', 'eps', 'momentum', 'nesterov',
-            'scheduler', 'step_size', 'gamma', 'T_max', 'eta_min',
-            'mixstyle_layers', 'mixstyle_p', 'mixstyle_alpha', 'dropout'
-        ]
-
-        trial_data = {
+        trial_data = trial.params.copy()
+    
+        # Add fold info and accuracy
+        trial_data.update({
             **clean_params,
             'fold': self.fold_info['fold'],
-            'domain': self.fold_info['test_domain'],
-            'value': val_acc,
-            **{param: None for param in all_possible_params},
-        }
-    
-        # DataFrame erstellen
-        df = pd.DataFrame([trial_data])
-    
-        # Header nur schreiben, wenn Datei neu erstellt wird
+            'test_domain': self.fold_info['test_domain'],
+            'val_acc': val_acc
+        })
+
+        all_params = [
+            'fold', 'test_domain', 'lr', 'batch_size', 'weight_decay', 
+            'optimizer', 'beta1', 'beta2', 'eps', 'momentum', 'nesterov',
+            'scheduler', 'step_size', 'gamma', 'T_max', 'eta_min',
+            'factor', 'patience', 'mixstyle_layers', 'mixstyle_p', 
+            'mixstyle_alpha', 'dropout', 'val_acc'
+        ]
+
+        complete_data = {param: trial_data.get(param, None) for param in all_params}
+        df = pd.DataFrame([complete_data])
+
         write_header = not os.path.exists(csv_path)
         df.to_csv(csv_path, mode='a', header=write_header, index=False)
     
@@ -367,7 +369,10 @@ class HP_Tuner:
         
         pruner = MedianPruner(n_startup_trials=5, n_warmup_steps=10)
         study = optuna.create_study(direction="maximize", pruner=pruner, sampler=optuna.samplers.TPESampler())
-        
+
+        study.set_user_attr("fold", self.fold_info["fold"])
+        study.set_user_attr("test_domain", self.fold_info["test_domain"])
+
         with tqdm(total=self.n_trials, desc="Hyperparameter-Tuning", unit="trial") as pbar:
             def update_pbar(study, trial):
                 pbar.update(1)
@@ -410,7 +415,7 @@ class HP_Tuner:
     
 
     def evaluate_model(self, model, test_loader):
-        """Evaluaeste the model on the test set."""
+        """Evaluate the model on the test set."""
         model.eval()
         correct = 0
         total = 0
@@ -446,13 +451,13 @@ class HP_Tuner:
         
         all_trials = []
     
-        for fold_dir in Path(save_dir).glob("[0-9]"):  # Sucht nur nach Ordnern mit Zahlen-Namen
+        for fold_dir in Path(save_dir).glob("[0-9]"):  # search for directories named with single digit (0-9)
             fold_num = fold_dir.name
-            trials_file = fold_dir / f"all_trials_fold_{fold_num}.csv"  # Fold-Nummer im Dateinamen
+            trials_file = fold_dir / f"all_trials_fold_{fold_num}.csv"
         
             if trials_file.exists():
                 df = pd.read_csv(trials_file)
-                df["domain"] = DOMAIN_NAMES['PACS'][int(fold_num)]  # Domain-Name hinzufügen
+                df["domain"] = DOMAIN_NAMES['PACS'][int(fold_num)]
                 all_trials.append(df)
             
         if not all_trials:
@@ -468,13 +473,13 @@ class HP_Tuner:
         if missing_cols:
             raise ValueError(f"Missing parameter cols in the data: {missing_cols}")
     
-        # Mittelwert, Standardabweichung und Anzahl der Domänen pro Kombination
+        # mean, std and count of domains for each parameter combination
         best_global = (
             combined_df.groupby(param_cols)
             [accuracy_col].agg(["mean", "std", "count"])
             .sort_values("mean", ascending=False)
             .reset_index()
-            .iloc[0]  # Bester Parametersatz (höchster Mittelwert)
+            .iloc[0]  # best parameter set (highest mean accuracy)
         )
         
         best_per_fold = combined_df.loc[combined_df.groupby('domain')[accuracy_col].idxmax()]

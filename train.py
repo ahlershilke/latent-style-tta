@@ -1,218 +1,255 @@
-import argparse
 import os
 import json
+import argparse
 import torch
 import torch.nn as nn
-import torch.optim as optim
-import torchvision.transforms as transforms
-import torchvision.datasets as datasets
-from tqdm import tqdm
+from torch.utils.data import DataLoader, Subset
+from torch.utils.tensorboard import SummaryWriter
+from sklearn.model_selection import KFold
 from datetime import datetime
-from torch.utils.data import DataLoader, random_split
-from models._resnet import resnet18, resnet34, resnet50, resnet101
-from models._mixstyle import MixStyle
-from data._datasets import PACS
-from torch.utils.data import Subset, ConcatDataset
+from typing import Dict, List, Tuple
+from models import resnet50  # Importiere das beste Modell aus dem Tuning
+from data._datasets import PACS, DOMAIN_NAMES
 
-
-def parse_args():
-    """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='Domain Generalization with MixStyle')
-    parser.add_argument('--data_root', type=str, required=True, 
-                       help='Root directory of dataset')
-    parser.add_argument('--test_domain', type=int, default=None,
-                       help='Domain index to use as test domain (leave-one-out)')
-    parser.add_argument('--model', type=str, default='resnet18',
-                       choices=['resnet18', 'resnet34', 'resnet50'],
-                       help='Model architecture')
-    parser.add_argument('--batch_size', type=int, default=32,
-                       help='Input batch size')
-    parser.add_argument('--epochs', type=int, default=50,
-                       help='Number of epochs to train')
-    parser.add_argument('--lr', type=float, default=0.001,
-                       help='Learning rate')
-    parser.add_argument('--num_classes', type=int, default=7,
-                       help='Number of classes')
-    parser.add_argument('--num_domains', type=int, default=4,
-                       help='Number of domains')
-    parser.add_argument('--mixstyle_p', type=float, default=0.5,
-                       help='Probability of applying MixStyle')
-    parser.add_argument('--mixstyle_alpha', type=float, default=0.3,
-                       help='Beta distribution alpha parameter for MixStyle')
-    parser.add_argument('--mixstyle_layers', type=str, default='layer1,layer2',
-                       help='Comma-separated list of layers to apply MixStyle')
-    parser.add_argument('--output_dir', type=str, default='./output',
-                       help='Directory to save outputs')
-    parser.add_argument('--debug', action='store_true',
-                       help='Run in debug mode with small subset of data')
-    return parser.parse_args()
-
-def setup_environment(args):
-    """Create output directories and setup device"""
-    os.makedirs(args.output_dir, exist_ok=True)
-    os.makedirs(os.path.join(args.output_dir, 'checkpoints'), exist_ok=True)
-    os.makedirs(os.path.join(args.output_dir, 'stats'), exist_ok=True)
-    
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-    
-    return device
-
-def get_model(args, device):
-    """Initialize model with MixStyle"""
-    model_fn = {
-        'resnet18': resnet18,
-        'resnet34': resnet34,
-        'resnet50': resnet50,
-        'resnet101': resnet101
-    }[args.model]
-    
-    mixstyle_layers = args.mixstyle_layers.split(',')
-    
-    model = model_fn(
-        num_classes=args.num_classes,
-        num_domains=args.num_domains,
-        use_mixstyle=True,
-        mixstyle_layers=mixstyle_layers,
-        mixstyle_p=args.mixstyle_p,
-        mixstyle_alpha=args.mixstyle_alpha
-    ).to(device)
-    
-    return model
-
-def train_epoch(model, loader, criterion, optimizer, device, epoch):
-    """Train model for one epoch"""
-    model.train()
-    running_loss = 0.0
-    correct = 0
-    total = 0
-    
-    pbar = tqdm(loader, desc=f'Epoch {epoch}', dynamic_ncols=True)
-    for images, class_labels, domain_labels in pbar:
-        images = images.to(device)
-        class_labels = class_labels.to(device)
-        domain_labels = domain_labels.to(device)
+class IndustrialTrainingFramework:
+    def __init__(self, config: Dict):
+        """
+        Industrietaugliches Training Framework mit k-fold Cross-Validation
         
-        optimizer.zero_grad()
-        outputs = model(images, domain_labels)
+        Args:
+            config: Konfigurationsdictionary mit:
+                - data_root: Pfad zum Datensatz
+                - batch_size: Batch-Größe
+                - num_epochs: Anzahl Epochen
+                - k_folds: Anzahl Folds
+                - device: CUDA/CPU
+                - log_dir: Log-Verzeichnis
+        """
+        self.config = config
+        self.device = torch.device(config['device'])
+        self.writer = SummaryWriter(log_dir=config['log_dir'])
+        self.current_fold = 0
         
-        loss = criterion(outputs, class_labels)
-        loss.backward()
-        optimizer.step()
+        # Initialisiere Datensatz
+        self.full_dataset = PACS(
+            root=config['data_root'],
+            test_domain=None,  # Kein Testdomain für k-fold
+            augment=self._get_augmentations()
+        )
         
-        _, predicted = torch.max(outputs, 1)
-        total += class_labels.size(0)
-        correct += (predicted == class_labels).sum().item()
-        running_loss += loss.item()
-        
-        pbar.set_postfix({
-            'loss': running_loss / (pbar.n + 1),
-            'acc': 100 * correct / total
-        })
-    
-    epoch_loss = running_loss / len(loader)
-    epoch_acc = 100 * correct / total
-    
-    return epoch_loss, epoch_acc
+    def _get_augmentations(self):
+        """Industriestandard Augmentations für Bilddaten"""
+        return transforms.Compose([
+            transforms.RandomResizedCrop(224),
+            transforms.RandomHorizontalFlip(),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
 
-def validate(model, loader, criterion, device):
-    """Validate model performance"""
-    model.eval()
-    running_loss = 0.0
-    correct = 0
-    total = 0
-    
-    with torch.no_grad():
-        for images, class_labels, domain_labels in tqdm(loader, desc='Validation'):
-            images = images.to(device)
-            class_labels = class_labels.to(device)
-            domain_labels = domain_labels.to(device)
+    def _load_best_hparams(self, hparam_path: str) -> Dict:
+        """Lädt die besten Hyperparameter aus dem Tuning"""
+        with open(hparam_path) as f:
+            return json.load(f)['best_params']
+
+    def _init_model(self, hparams: Dict) -> nn.Module:
+        """Initialisiert das beste Modell mit optimierten Hyperparametern"""
+        model = resnet50(
+            num_classes=len(self.full_dataset.classes),
+            num_domains=len(DOMAIN_NAMES['PACS']),
+            use_mixstyle=True,
+            mixstyle_layers=hparams['mixstyle_layers'].split('+'),
+            mixstyle_p=hparams['mixstyle_p'],
+            mixstyle_alpha=hparams['mixstyle_alpha'],
+            dropout_p=hparams['dropout'],
+            pretrained=True
+        )
+        return model.to(self.device)
+
+    def _init_optimizer(self, model: nn.Module, hparams: Dict) -> Tuple:
+        """Initialisiert Optimierer und Scheduler"""
+        if hparams['optimizer'] == 'AdamW':
+            optimizer = torch.optim.AdamW(
+                model.parameters(),
+                lr=hparams['lr'],
+                weight_decay=hparams['weight_decay']
+            )
+        elif hparams['optimizer'] == 'SGD':
+            optimizer = torch.optim.SGD(
+                model.parameters(),
+                lr=hparams['lr'],
+                momentum=hparams.get('momentum', 0.9),
+                weight_decay=hparams['weight_decay']
+            )
+        
+        if hparams['scheduler'] == 'CosineAnnealing':
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=self.config['num_epochs']
+            )
+        return optimizer, scheduler
+
+    def _kfold_split(self) -> List[Tuple]:
+        """Generiert k-fold Splits mit stratifizierten Labels"""
+        kf = KFold(n_splits=self.config['k_folds'], shuffle=True)
+        return list(kf.split(range(len(self.full_dataset))))
+
+    def train_epoch(self, model: nn.Module, loader: DataLoader, 
+                   optimizer: torch.optim.Optimizer, criterion: nn.Module) -> float:
+        """Ein Trainingsepoch"""
+        model.train()
+        total_loss = 0.0
+        
+        for inputs, labels, _ in loader:
+            inputs, labels = inputs.to(self.device), labels.to(self.device)
             
-            outputs = model(images, domain_labels)
-            loss = criterion(outputs, class_labels)
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
             
-            _, predicted = torch.max(outputs, 1)
-            total += class_labels.size(0)
-            correct += (predicted == class_labels).sum().item()
-            running_loss += loss.item()
-    
-    val_loss = running_loss / len(loader)
-    val_acc = 100 * correct / total
-    
-    return val_loss, val_acc
+            total_loss += loss.item()
+        
+        return total_loss / len(loader)
 
-def save_checkpoint(model, optimizer, epoch, args, best=False):
-    """Save model checkpoint"""
-    state = {
-        'epoch': epoch,
-        'state_dict': model.state_dict(),
-        'optimizer': optimizer.state_dict(),
-        'args': vars(args)
+    def validate(self, model: nn.Module, loader: DataLoader, 
+                criterion: nn.Module) -> Tuple[float, float]:
+        """Validierung eines Epoch"""
+        model.eval()
+        val_loss = 0.0
+        correct = 0
+        total = 0
+        
+        with torch.no_grad():
+            for inputs, labels, _ in loader:
+                inputs, labels = inputs.to(self.device), labels.to(self.device)
+                outputs = model(inputs)
+                val_loss += criterion(outputs, labels).item()
+                
+                _, predicted = torch.max(outputs.data, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+        
+        accuracy = correct / total
+        return val_loss / len(loader), accuracy
+
+    def run_kfold_training(self, hparam_path: str):
+        """Haupttraining mit k-fold Cross-Validation"""
+        hparams = self._load_best_hparams(hparam_path)
+        kfold_splits = self._kfold_split()
+        results = {}
+        
+        for fold, (train_idx, val_idx) in enumerate(kfold_splits):
+            print(f"\n=== Fold {fold+1}/{self.config['k_folds']} ===")
+            self.current_fold = fold + 1
+            
+            # Datenaufteilung
+            train_set = Subset(self.full_dataset, train_idx)
+            val_set = Subset(self.full_dataset, val_idx)
+            
+            train_loader = DataLoader(
+                train_set,
+                batch_size=self.config['batch_size'],
+                shuffle=True,
+                num_workers=4,
+                pin_memory=True
+            )
+            val_loader = DataLoader(
+                val_set,
+                batch_size=self.config['batch_size'],
+                shuffle=False,
+                num_workers=4,
+                pin_memory=True
+            )
+            
+            # Modell initialisieren
+            model = self._init_model(hparams)
+            optimizer, scheduler = self._init_optimizer(model, hparams)
+            criterion = nn.CrossEntropyLoss()
+            
+            # Training loop
+            best_val_acc = 0.0
+            for epoch in range(self.config['num_epochs']):
+                train_loss = self.train_epoch(model, train_loader, optimizer, criterion)
+                val_loss, val_acc = self.validate(model, val_loader, criterion)
+                
+                # Logging
+                self.writer.add_scalar(f'Fold_{fold}/train_loss', train_loss, epoch)
+                self.writer.add_scalar(f'Fold_{fold}/val_loss', val_loss, epoch)
+                self.writer.add_scalar(f'Fold_{fold}/val_acc', val_acc, epoch)
+                
+                # Scheduler step
+                if scheduler:
+                    scheduler.step()
+                
+                # Bestes Modell speichern
+                if val_acc > best_val_acc:
+                    best_val_acc = val_acc
+                    self._save_model(model, f"best_fold_{fold}.pt")
+                
+                print(f"Epoch {epoch+1}/{self.config['num_epochs']} | "
+                      f"Train Loss: {train_loss:.4f} | "
+                      f"Val Loss: {val_loss:.4f} | "
+                      f"Val Acc: {val_acc:.2%}")
+            
+            results[f'fold_{fold}'] = {
+                'best_val_acc': best_val_acc,
+                'final_val_loss': val_loss
+            }
+        
+        # Gesamtergebnisse speichern
+        self._save_results(results)
+        self.writer.close()
+        return results
+
+    def _save_model(self, model: nn.Module, filename: str):
+        """Speichert Modellzustand"""
+        save_path = os.path.join(self.config['save_dir'], filename)
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'fold': self.current_fold,
+            'timestamp': datetime.now().isoformat()
+        }, save_path)
+
+    def _save_results(self, results: Dict):
+        """Speichert Trainingsergebnisse"""
+        result_path = os.path.join(self.config['save_dir'], 'kfold_results.json')
+        with open(result_path, 'w') as f:
+            json.dump({
+                'config': self.config,
+                'results': results,
+                'average_val_acc': sum(r['best_val_acc'] for r in results.values()) / len(results)
+            }, f, indent=2)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Industrial Training Framework')
+    parser.add_argument('--data_root', type=str, required=True, help='Path to dataset')
+    parser.add_argument('--hparam_file', type=str, required=True, help='Path to best hyperparameters')
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
+    parser.add_argument('--num_epochs', type=int, default=50, help='Number of epochs')
+    parser.add_argument('--k_folds', type=int, default=5, help='Number of k-folds')
+    parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'])
+    args = parser.parse_args()
+
+    # Konfiguration
+    config = {
+        'data_root': args.data_root,
+        'batch_size': args.batch_size,
+        'num_epochs': args.num_epochs,
+        'k_folds': args.k_folds,
+        'device': args.device,
+        'log_dir': 'logs/industrial_training',
+        'save_dir': 'saved_models'
     }
     
-    filename = f'checkpoint_{epoch}.pth' if not best else 'best_checkpoint.pth'
-    torch.save(state, os.path.join(args.output_dir, 'checkpoints', filename))
+    # Verzeichnisse erstellen
+    os.makedirs(config['log_dir'], exist_ok=True)
+    os.makedirs(config['save_dir'], exist_ok=True)
 
-def main():
-    args = parse_args()
-    device = setup_environment(args)
+    # Training starten
+    trainer = IndustrialTrainingFramework(config)
+    results = trainer.run_kfold_training(args.hparam_file)
     
-    # Initialize dataset and loaders
-    full_dataset = PACS(root=args.data_root, test_domain=args.test_domain, augment=None)
-    
-    if args.debug:
-        debug_size = min(500, int(0.1 * len(full_dataset)))
-        dataset = Subset(full_dataset, range(debug_size))
-        train_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
-        val_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
-    else:
-        train_loader, val_loader, _ = full_dataset.generate_loaders(
-            batch_size=args.batch_size,
-            test_size=0.2,
-            stratify=True
-        )
-    
-    # Initialize model, loss and optimizer
-    model = get_model(args, device)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)
-    
-    best_acc = 0.0
-    history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
-    
-    # Training loop
-    for epoch in range(1, args.epochs + 1):
-        train_loss, train_acc = train_epoch(model, train_loader, criterion, optimizer, device, epoch)
-        val_loss, val_acc = validate(model, val_loader, criterion, device)
-        
-        # Update learning rate
-        scheduler.step(val_acc)
-        
-        # Save history
-        history['train_loss'].append(train_loss)
-        history['train_acc'].append(train_acc)
-        history['val_loss'].append(val_loss)
-        history['val_acc'].append(val_acc)
-        
-        # Save checkpoint
-        save_checkpoint(model, optimizer, epoch, args)
-        if val_acc > best_acc:
-            best_acc = val_acc
-            save_checkpoint(model, optimizer, epoch, args, best=True)
-        
-        # Save style statistics
-        stats_path = os.path.join(args.output_dir, 'stats', f'style_stats_{epoch}.json')
-        model.get_style_stats().save_style_stats_to_json(stats_path)
-        
-        print(f'Epoch {epoch}/{args.epochs}: '
-              f'Train Loss: {train_loss:.4f}, Acc: {train_acc:.2f}% | '
-              f'Val Loss: {val_loss:.4f}, Acc: {val_acc:.2f}%')
-    
-    # Save final model and training history
-    torch.save(model.state_dict(), os.path.join(args.output_dir, 'final_model.pth'))
-    with open(os.path.join(args.output_dir, 'history.json'), 'w') as f:
-        json.dump(history, f)
-
-if __name__ == '__main__':
-    main()
+    print("\n=== Training Complete ===")
+    print(f"Average Validation Accuracy: {results['average_val_acc']:.2%}")
