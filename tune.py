@@ -21,6 +21,7 @@ def set_seed(seed=42):
 
 
 def main():
+    use_mixstyle = None
     all_splits = get_lodo_splits()
     results: List[Dict] = []
     all_studies = []
@@ -45,6 +46,8 @@ def main():
 
         study = tuner.run()
         all_studies.append(study)
+
+        use_mixstyle = any('mixstyle' in study.best_params for study in all_studies)
         
         test_loader = DataLoader(test_data, batch_size=32, shuffle=False)
         test_metrics = tuner.evaluate_model(
@@ -66,7 +69,7 @@ def main():
     with open("experiments/hp_results/final_results.json", "w") as f:
         json.dump({
             'per_domain': results,
-            'global_best': HP_Tuner.compute_global_best_params("experiments/hp_results"),
+            'global_best': HP_Tuner.compute_global_best_params("experiments/hp_results", use_mixstyle),
             'config': {
                 'num_trials': args.num_trials,
                 'batch_size': study.best_params['batch_size'],
@@ -82,7 +85,7 @@ def main():
         }, f, indent=2)
 
     if any(len(study.trials) > 1 for study in all_studies):
-        analyze_and_visualize_studies(all_studies, "experiments/hp_results")
+        analyze_and_visualize_studies(all_studies, "experiments/hp_results", use_mixstyle)
     else:
         print("Skipping visualizations - not enough trials for analysis")
     

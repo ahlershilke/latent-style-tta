@@ -7,7 +7,7 @@ from plotly.subplots import make_subplots
 import optuna
 
 
-def analyze_and_visualize_studies(all_studies, save_dir):
+def analyze_and_visualize_studies(all_studies, save_dir, use_mixstyle: bool):
     """
     Analyze and visualize results from multiple Optuna studies.
     Args:
@@ -25,6 +25,13 @@ def analyze_and_visualize_studies(all_studies, save_dir):
         'momentum', 'eps', 'nesterov', 'step_size', 'T_max', 'eta_min', 'factor',
         'patience', 'gamma'
     ]
+
+    if use_mixstyle == False:
+        all_param_keys = [
+            'lr', 'batch_size', 'weight_decay', 'optimizer', 'scheduler', 'dropout',
+            'beta1', 'beta2', 'momentum', 'eps', 'nesterov', 'step_size', 'T_max', 
+            'eta_min', 'factor', 'patience', 'gamma'
+        ]
     
     for study in all_studies:
         best_trial = study.best_trial

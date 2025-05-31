@@ -87,20 +87,23 @@ class HP_Tuner:
         #model_type = trial.suggest_categorical("model_type", ["resnet18", "resnet34", "resnet50", "resnet101"])
         model_type = "resnet50"
     
-        use_mixstyle = True
-        mixstyle_layers = trial.suggest_categorical("mixstyle_layers", [
-                "layer1", "layer2", "layer3", "layer4",
-                "layer1+layer2", "layer1+layer2+layer3", "layer1+layer3",
-                "layer2+layer3", "all", "none"])
+        actual_layers = []
+        use_mixstyle = False
         mixstyle_p = trial.suggest_float("mixstyle_p", 0.1, 0.9) if use_mixstyle else 0.0
         mixstyle_alpha = trial.suggest_float("mixstyle_alpha", 0.1, 0.5) if use_mixstyle else 0.0
+
+        if use_mixstyle:
+            mixstyle_layers = trial.suggest_categorical("mixstyle_layers", [
+                    "layer1", "layer2", "layer3", "layer4",
+                    "layer1+layer2", "layer1+layer2+layer3", "layer1+layer3",
+                    "layer2+layer3", "all", "none"])
         
-        if mixstyle_layers == "all":
-            actual_layers = ["layer1", "layer2", "layer3", "layer4"]
-        elif mixstyle_layers == "none":
-            actual_layers = []
-        else:
-            actual_layers = mixstyle_layers.split("+")
+            if mixstyle_layers == "all":
+                actual_layers = ["layer1", "layer2", "layer3", "layer4"]
+            elif mixstyle_layers == "none":
+                actual_layers = []
+            else:
+                actual_layers = mixstyle_layers.split("+")
     
         dropout = trial.suggest_float("dropout", 0.0, 0.5)
 
@@ -133,6 +136,8 @@ class HP_Tuner:
         model = self.create_model(trial)
         device = self.device
         model.to(device)
+
+        use_mixstyle = getattr(model, 'use_mixstyle', False)
     
         optimizer_name = trial.suggest_categorical("optimizer", ["Adam", "SGD", "AdamW"])
         if optimizer_name == "Adam":
@@ -207,7 +212,7 @@ class HP_Tuner:
                 inputs, labels, domain_idx = inputs.to(device), labels.to(device), domain_idx.to(device)
             
                 optimizer.zero_grad()
-                outputs = model(inputs, domain_idx)
+                outputs = model(inputs, domain_idx) if use_mixstyle else model(inputs)
                 loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
@@ -246,7 +251,7 @@ class HP_Tuner:
             if accuracy > best_accuracy:
                 best_accuracy = accuracy
 
-            self.log_trial_result(trial, accuracy)
+            self.log_trial_result(trial, accuracy, model)
 
         return best_accuracy
     
@@ -332,7 +337,7 @@ class HP_Tuner:
             print(f"Failed to save configs: {str(e)}")
 
 
-    def log_trial_result(self, trial, val_acc):
+    def log_trial_result(self, trial, val_acc, model):
         csv_path = os.path.join(self.save_dir, f"results_trials_fold_{self.fold_info['fold']}.csv")
 
         clean_params = {k.replace('params_', ''): v for k, v in trial.params.items()}
@@ -354,6 +359,15 @@ class HP_Tuner:
             'factor', 'patience', 'mixstyle_layers', 'mixstyle_p', 
             'mixstyle_alpha', 'dropout', 'val_acc'
         ]
+
+        use_mixstyle = getattr(model, 'use_mixstyle', False)
+        if not use_mixstyle:
+            all_params = [
+                'fold', 'test_domain', 'lr', 'batch_size', 'weight_decay', 
+                'optimizer', 'beta1', 'beta2', 'eps', 'momentum', 'nesterov',
+                'scheduler', 'step_size', 'gamma', 'T_max', 'eta_min',
+                'factor', 'patience', 'dropout', 'val_acc'
+            ]
 
         complete_data = {param: trial_data.get(param, None) for param in all_params}
         df = pd.DataFrame([complete_data])
@@ -437,7 +451,7 @@ class HP_Tuner:
     
 
     @staticmethod
-    def compute_global_best_params(save_dir: str) -> Dict[str, Any]:
+    def compute_global_best_params(save_dir: str, use_mixstyle: bool) -> Dict[str, Any]:
         """
         Calculates the average validation accuracy across all domains 
         and saves the best global hyperparameters.
@@ -468,6 +482,9 @@ class HP_Tuner:
         accuracy_col = 'value'
         param_cols = ['lr', 'batch_size', 'weight_decay', 'optimizer',
                       'scheduler', 'dropout', 'mixstyle_layers', 'mixstyle_p', 'mixstyle_alpha']
+        
+        if use_mixstyle == False:
+            param_cols = ['lr', 'batch_size', 'weight_decay', 'optimizer', 'scheduler', 'dropout']
         
         missing_cols = [col for col in param_cols if col not in combined_df.columns]
         if missing_cols:

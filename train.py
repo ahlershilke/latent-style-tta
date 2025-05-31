@@ -8,37 +8,39 @@ from torch.utils.tensorboard import SummaryWriter
 from sklearn.model_selection import KFold
 from datetime import datetime
 from typing import Dict, List, Tuple
-from models import resnet50  # Importiere das beste Modell aus dem Tuning
+from models import resnet50
 from data._datasets import PACS, DOMAIN_NAMES
 
-class IndustrialTrainingFramework:
+class TrainingFramework:
     def __init__(self, config: Dict):
         """
-        Industrietaugliches Training Framework mit k-fold Cross-Validation
+        Training framework with k-fold cross-validation for image classification tasks
         
         Args:
-            config: Konfigurationsdictionary mit:
-                - data_root: Pfad zum Datensatz
-                - batch_size: Batch-Größe
-                - num_epochs: Anzahl Epochen
-                - k_folds: Anzahl Folds
+            config: Configuration dictionary with
+                - data_root: path to dataset
+                - batch_size: batch size
+                - num_epochs: number of epochs
+                - k_folds: number of folds for k-fold cross-validation
                 - device: CUDA/CPU
-                - log_dir: Log-Verzeichnis
+                - log_dir: directory for TensorBoard logs
         """
         self.config = config
-        self.device = torch.device(config['device'])
-        self.writer = SummaryWriter(log_dir=config['log_dir'])
+        self.device = torch.device(("cuda" if torch.cuda.is_available() else "cpu")) #self.device = torch.device(config['device'])
+        self.writer = SummaryWriter("experiments/train_results")
+        # self.writer = SummaryWriter(log_dir=config['log_dir'])
         self.current_fold = 0
         
-        # Initialisiere Datensatz
         self.full_dataset = PACS(
             root=config['data_root'],
-            test_domain=None,  # Kein Testdomain für k-fold
-            augment=self._get_augmentations()
+            test_domain=None
+            #augment=self._get_augmentations()
         )
         
+
+    """
     def _get_augmentations(self):
-        """Industriestandard Augmentations für Bilddaten"""
+        #Industriestandard Augmentations für Bilddaten
         return transforms.Compose([
             transforms.RandomResizedCrop(224),
             transforms.RandomHorizontalFlip(),
@@ -46,14 +48,20 @@ class IndustrialTrainingFramework:
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
+    """
+
 
     def _load_best_hparams(self, hparam_path: str) -> Dict:
-        """Lädt die besten Hyperparameter aus dem Tuning"""
+        """Loads the best hyperparameters from a JSON file"""
+        if not os.path.exists(hparam_path):
+            raise FileNotFoundError(f"Hyperparameter file not found: {hparam_path}")
+        
         with open(hparam_path) as f:
             return json.load(f)['best_params']
 
+
     def _init_model(self, hparams: Dict) -> nn.Module:
-        """Initialisiert das beste Modell mit optimierten Hyperparametern"""
+        """Initialises the best model with given hyperparameters"""
         model = resnet50(
             num_classes=len(self.full_dataset.classes),
             num_domains=len(DOMAIN_NAMES['PACS']),
@@ -66,8 +74,9 @@ class IndustrialTrainingFramework:
         )
         return model.to(self.device)
 
+
     def _init_optimizer(self, model: nn.Module, hparams: Dict) -> Tuple:
-        """Initialisiert Optimierer und Scheduler"""
+        """Initialises the optimizer and learning rate scheduler"""
         if hparams['optimizer'] == 'AdamW':
             optimizer = torch.optim.AdamW(
                 model.parameters(),
@@ -89,14 +98,16 @@ class IndustrialTrainingFramework:
             )
         return optimizer, scheduler
 
+
     def _kfold_split(self) -> List[Tuple]:
-        """Generiert k-fold Splits mit stratifizierten Labels"""
+        """Generates k-fold splits for cross-validation"""
         kf = KFold(n_splits=self.config['k_folds'], shuffle=True)
         return list(kf.split(range(len(self.full_dataset))))
 
+
     def train_epoch(self, model: nn.Module, loader: DataLoader, 
                    optimizer: torch.optim.Optimizer, criterion: nn.Module) -> float:
-        """Ein Trainingsepoch"""
+        """One epoch of training"""
         model.train()
         total_loss = 0.0
         
@@ -113,9 +124,10 @@ class IndustrialTrainingFramework:
         
         return total_loss / len(loader)
 
+
     def validate(self, model: nn.Module, loader: DataLoader, 
                 criterion: nn.Module) -> Tuple[float, float]:
-        """Validierung eines Epoch"""
+        """Validation phase"""
         model.eval()
         val_loss = 0.0
         correct = 0
@@ -134,8 +146,9 @@ class IndustrialTrainingFramework:
         accuracy = correct / total
         return val_loss / len(loader), accuracy
 
-    def run_kfold_training(self, hparam_path: str):
-        """Haupttraining mit k-fold Cross-Validation"""
+
+    def run(self, hparam_path: str):
+        """Train the model using k-fold cross-validation"""
         hparams = self._load_best_hparams(hparam_path)
         kfold_splits = self._kfold_split()
         results = {}
@@ -203,8 +216,9 @@ class IndustrialTrainingFramework:
         self.writer.close()
         return results
 
+
     def _save_model(self, model: nn.Module, filename: str):
-        """Speichert Modellzustand"""
+        """Save the model state dictionary"""
         save_path = os.path.join(self.config['save_dir'], filename)
         torch.save({
             'model_state_dict': model.state_dict(),
@@ -212,8 +226,9 @@ class IndustrialTrainingFramework:
             'timestamp': datetime.now().isoformat()
         }, save_path)
 
+
     def _save_results(self, results: Dict):
-        """Speichert Trainingsergebnisse"""
+        """Saves the training results to a JSON file"""
         result_path = os.path.join(self.config['save_dir'], 'kfold_results.json')
         with open(result_path, 'w') as f:
             json.dump({
@@ -221,6 +236,7 @@ class IndustrialTrainingFramework:
                 'results': results,
                 'average_val_acc': sum(r['best_val_acc'] for r in results.values()) / len(results)
             }, f, indent=2)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Industrial Training Framework')
@@ -248,7 +264,7 @@ if __name__ == "__main__":
     os.makedirs(config['save_dir'], exist_ok=True)
 
     # Training starten
-    trainer = IndustrialTrainingFramework(config)
+    trainer = TrainingFramework(config)
     results = trainer.run_kfold_training(args.hparam_file)
     
     print("\n=== Training Complete ===")
