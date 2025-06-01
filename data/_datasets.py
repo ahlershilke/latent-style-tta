@@ -24,6 +24,15 @@ DOMAIN_NAMES = {
     #'camelyon17': ["center_0", "center_1", "center_2", "center_3", "center_4"],
 }
 
+class DomainSubset(Subset):
+    """Wraps a dataset and adds domain index to the output."""
+    def __init__(self, dataset, indices, domain_idx):
+        super().__init__(dataset, indices)
+        self.domain_idx = domain_idx
+    
+    def __getitem__(self, idx):
+        img, label = super().__getitem__(idx)
+        return img, label, self.domain_idx
 
 class MultiDomainDataset:
     domains = None
@@ -119,31 +128,30 @@ class DomainDataset(MultiDomainDataset):
                 size_dict[domain_name_map[i]] = len(domain_dataset.imgs)
         return size_dict
 
+    """
     def generate_loaders(
         self,
         batch_size: int = 32,
         test_size: float = 0.2,
         stratify: bool = True,
     ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-        """
-        Generates DataLoaders for training and testing domains with domain labels.
+        
+        #Generates DataLoaders for training and testing domains with domain labels.
 
-        :param test_size: Size of the validation partition (default: 0.2).
-        :param batch_size: Size of the batch. (default: 32)
-        :param stratify: Whether to stratify class distribution (default: True).
-        :return: A tuple of DataLoaders for (train, val, test), where each batch is (images, labels, domain_indices).
-        """
+        #:param test_size: Size of the validation partition (default: 0.2).
+        #:param batch_size: Size of the batch. (default: 32)
+        #:param stratify: Whether to stratify class distribution (default: True).
+        #:return: A tuple of DataLoaders for (train, val, test), where each batch is (images, labels, domain_indices).
+        
 
-        assert all(len(item) == 3 for item in self), "Dataset muss (img, label, domain) zurückgeben"
+        assert all(len(item) == 3 for item in self), "Dataset has to return (img, label, domain)"
 
         # custom collate function to preserve domain indices
         def collate_fn(batch):
             imgs = torch.stack([item[0] for item in batch])
             labels = torch.tensor([item[1] for item in batch])
-            #domains = torch.tensor([item[2] for item in batch])  # shape: [batch_size]
-            domains = torch.tensor([int(item[2]) for item in batch])
-
-            
+            domains = torch.tensor([item[2] for item in batch])  # shape: [batch_size]
+            #domains = torch.tensor([int(item[2]) for item in batch])
             return imgs, labels, domains
 
         # split data into train/val subsets per domain
@@ -169,8 +177,9 @@ class DomainDataset(MultiDomainDataset):
                     shuffle=True
                 )
 
-            train_subsets.append(Subset(dom, train_idx))
-            val_subsets.append(Subset(dom, valid_idx))
+            domain_idx = self.domain_to_idx[dom.root.split(os.sep)[-2]]  # oder einfach domain_idx = i, je nach Kontext
+            train_subsets.append(DomainSubset(dom, train_idx, domain_idx))
+            val_subsets.append(DomainSubset(dom, valid_idx, domain_idx))
 
         # create concatenated datasets
         train_split = ConcatDataset(train_subsets)
@@ -203,6 +212,79 @@ class DomainDataset(MultiDomainDataset):
             )  
 
         return train_loader, val_loader, test_loader
+    """
+
+    def generate_loaders(
+        self,
+        batch_size: int = 32,
+        test_size: float = 0.2,
+        stratify: bool = True,
+    ) -> Tuple[DataLoader, DataLoader, Optional[DataLoader]]:
+        """
+        Generates DataLoaders for training and testing domains with reindexed domain labels.
+        :return: Tuple of (train_loader, val_loader, test_loader)
+        """
+
+        # custom collate function
+        def collate_fn(batch):
+            imgs = torch.stack([item[0] for item in batch])
+            labels = torch.tensor([item[1] for item in batch])
+            domains = torch.tensor([item[2] for item in batch])
+            return imgs, labels, domains
+
+        # Step 1: Create reindexing map
+        train_domain_indices = [i for i in range(len(self.data)) if i != self.test_domain]
+        domain_idx_mapping = {old: new for new, old in enumerate(train_domain_indices)}
+
+        # Step 2: Split into train/val per domain using reindexed domain_idx
+        train_subsets = []
+        val_subsets = []
+
+        for old_domain_idx in train_domain_indices:
+            dom = self.data[old_domain_idx]
+            targets = dom.targets
+
+            train_idx, val_idx = train_test_split(
+                np.arange(len(targets)),
+                test_size=test_size,
+                random_state=42,
+                shuffle=True,
+                stratify=targets if stratify else None
+            )
+
+            new_domain_idx = domain_idx_mapping[old_domain_idx]
+            train_subsets.append(DomainSubset(dom, train_idx, new_domain_idx))
+            val_subsets.append(DomainSubset(dom, val_idx, new_domain_idx))
+
+        # Step 3: Create loaders
+        train_loader = DataLoader(
+            ConcatDataset(train_subsets),
+            batch_size=batch_size,
+            shuffle=True,
+            drop_last=True,
+            collate_fn=collate_fn,
+        )
+
+        val_loader = DataLoader(
+            ConcatDataset(val_subsets),
+            batch_size=batch_size,
+            shuffle=True,
+            drop_last=True,
+            collate_fn=collate_fn,
+        )
+
+        test_loader = None
+        if self.test_domain is not None:
+            test_domain_dataset = self.data[self.test_domain]
+            test_loader = DataLoader(
+                DomainSubset(test_domain_dataset, list(range(len(test_domain_dataset))), domain_idx=len(train_domain_indices)),
+                batch_size=batch_size,
+                shuffle=False,
+                collate_fn=collate_fn,
+            )
+
+        return train_loader, val_loader, test_loader
+
     
     def __getitem__(self, index):
         """
@@ -214,36 +296,87 @@ class DomainDataset(MultiDomainDataset):
         
         return img, label, domain_idx
     
-    def generate_train_datasets(self, val_ratio=0.2, stratify=True):
+
+    def generate_train_val_datasets(self, val_ratio=0.2, stratify=True):
         """
-        Args:
-            val_ratio: Fraction of data to use for validation (e.g., 0.2 = 20%).
-            stratify: If True, preserves class distribution in splits.
+        Generates train and validation datasets for all domains except the test domain.
+        Applies domain index reindexing (0 ... N-1).
         """
         train_subsets = []
-        for dom in [d for i, d in enumerate(self.data) if i != self.test_domain]:
-            targets = dom.targets
-            train_idx, _ = train_test_split(
-                np.arange(len(targets)), 
-                test_size=val_ratio, 
-                stratify=targets if stratify else None,
-                random_state=42
-            )
-            train_subsets.append(Subset(dom, train_idx))
-        return ConcatDataset(train_subsets)
-    
-    def generate_val_dataset(self, val_ratio=0.2, stratify=True):
         val_subsets = []
-        for dom in [d for i, d in enumerate(self.data) if i != self.test_domain]:
+
+        # 1. Hole originale Domain-Indizes außer test_domain
+        train_domain_indices = [i for i in range(len(self.data)) if i != self.test_domain]
+
+        # 2. Baue Reindex-Mapping: alt_idx -> neuer Index (0 ... N-1)
+        domain_idx_mapping = {old: new for new, old in enumerate(train_domain_indices)}
+        self.train_domain_idx_mapping = domain_idx_mapping  # optional: merken für später
+
+        # 3. Iteriere über Trainingsdomains und wende neue Indizes an
+        for old_domain_idx in train_domain_indices:
+            dom = self.data[old_domain_idx]
             targets = dom.targets
-            _, val_idx = train_test_split(
-                np.arange(len(targets)), 
-                test_size=val_ratio, 
+
+            train_idx, val_idx = train_test_split(
+                np.arange(len(targets)),
+                test_size=val_ratio,
                 stratify=targets if stratify else None,
                 random_state=42
             )
-            val_subsets.append(Subset(dom, val_idx))
-        return ConcatDataset(val_subsets)
+
+            new_domain_idx = domain_idx_mapping[old_domain_idx]
+            train_subsets.append(DomainSubset(dom, train_idx, new_domain_idx))
+            val_subsets.append(DomainSubset(dom, val_idx, new_domain_idx))
+
+        return ConcatDataset(train_subsets), ConcatDataset(val_subsets)
+
+
+    def generate_lodo_splits(self):
+        """Generates Leave-One-Domain-Out splits with consistent domain indices."""
+        splits = []
+    
+        for test_domain_idx in range(len(self.domains)):
+            # 1. Bestimme Trainingsdomains (alle außer test_domain_idx)
+            train_domains = [i for i in range(len(self.domains)) if i != test_domain_idx]
+        
+            # 2. Erstelle Mapping: originaler Index -> neuer fortlaufender Index (0..N-1)
+            domain_idx_mapping = {orig_idx: new_idx for new_idx, orig_idx in enumerate(train_domains)}
+            test_domain_new_idx = len(train_domains)  # Test-Domain bekommt nächsten Index
+
+            # 3. Erstelle Train/Val-Subsets mit neuen Indizes
+            train_subsets, val_subsets = [], []
+            for orig_domain_idx in train_domains:
+                domain_data = self.data[orig_domain_idx]
+                targets = domain_data.targets
+            
+                # Train/Val-Split
+                train_idx, val_idx = train_test_split(
+                    np.arange(len(targets)),
+                    test_size=0.2,
+                    random_state=42,
+                    stratify=targets
+                )
+            
+                # Wende neues domain_idx-Mapping an
+                new_domain_idx = domain_idx_mapping[orig_domain_idx]
+                train_subsets.append(DomainSubset(domain_data, train_idx, new_domain_idx))
+                val_subsets.append(DomainSubset(domain_data, val_idx, new_domain_idx))
+
+            # 4. Test-Domain mit konsistentem Index
+            test_data = []
+            test_data.append(DomainSubset(
+                self.data[test_domain_idx],
+                indices=list(range(len(self.data[test_domain_idx]))),
+                domain_idx=test_domain_new_idx
+            ))
+
+            splits.append((
+                ConcatDataset(train_subsets),  # Train
+                ConcatDataset(val_subsets),    # Val
+                ConcatDataset(test_data)                      # Test
+            ))
+    
+        return splits
 
 
 def get_dataset(

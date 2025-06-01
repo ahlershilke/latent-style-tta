@@ -41,6 +41,7 @@ class ResNet(nn.Module):
             mixstyle_layers: list = [],
             mixstyle_p: float = 0.5,
             mixstyle_alpha: float = 0.3,
+            verbose: bool = False,
             **kwargs
     ):
         super(ResNet, self).__init__()
@@ -72,7 +73,8 @@ class ResNet(nn.Module):
                 num_layers=len(mixstyle_layers),
                 store_stats=True
             )
-            print('Insert MixStyle after the following layers: {}'.format(mixstyle_layers))
+            if verbose:
+                print('Insert MixStyle after the following layers: {}'.format(mixstyle_layers))
         self.mixstyle_layers = mixstyle_layers
 
     def _make_layer(
@@ -146,19 +148,19 @@ class ResNet(nn.Module):
         x = self.maxpool(x)
 
         x = self.layer1(x)
-        if 'layer1' in self.mixstyle_layers:
+        if self.mixstyle is not None and 'layer1' in self.mixstyle_layers:
             x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=0)
 
         x = self.layer2(x)
-        if 'layer2' in self.mixstyle_layers:
+        if self.mixstyle is not None and 'layer2' in self.mixstyle_layers:
             x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=1)
 
         x = self.layer3(x)
-        if 'layer3' in self.mixstyle_layers:
+        if self.mixstyle is not None and 'layer3' in self.mixstyle_layers:
             x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=2)
 
         x = self.layer4(x)
-        if 'layer4' in self.mixstyle_layers:
+        if self.mixstyle is not None and 'layer4' in self.mixstyle_layers:
             x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=3)
 
         return x
@@ -323,12 +325,13 @@ class Bottleneck (nn.Module):
         return out
 
 
-def init_pretrained_weights(model, model_url):
+def init_pretrained_weights(model, model_url, verbose=False):
     """Initializes model with pretrained weights.
 
     Layers that don't match with pretrained layers in name or size are kept unchanged.
     """
-    print("Initializing pretrained weights...")
+    if verbose:
+        print("Initializing pretrained weights...")
     pretrain_dict = model_zoo.load_url(model_url)
     model_dict = model.state_dict()
     pretrain_dict = {
@@ -340,46 +343,46 @@ def init_pretrained_weights(model, model_url):
     model.load_state_dict(model_dict)
 
 
-def resnet18(num_classes: int, num_domains: int, **kwargs):
+def resnet18(num_classes: int, num_domains: int, verbose=False, **kwargs):
     model = ResNet(
-        BasicBlock, [2, 2, 2, 2], num_classes, num_domains, **kwargs
+        BasicBlock, [2, 2, 2, 2], num_classes, num_domains, verbose=verbose, **kwargs
     )
     if kwargs.get('pretrained', False):
-        init_pretrained_weights(model, model_urls['resnet18'])
+        init_pretrained_weights(model, model_urls['resnet18'], verbose=verbose)
     return model
 
 
-def resnet34(num_classes: int, num_domains: int, pretrained: bool = True, **kwargs):
+def resnet34(num_classes: int, num_domains: int, pretrained: bool = True, verbose=False, **kwargs):
     model = ResNet(
-        BasicBlock, [3, 4, 6, 3], num_classes, num_domains, **kwargs
+        BasicBlock, [3, 4, 6, 3], num_classes, num_domains, verbose=verbose, **kwargs
     )
     if pretrained:
-        init_pretrained_weights(model, model_urls['resnet34'])
+        init_pretrained_weights(model, model_urls['resnet34'], verbose=verbose)
     return model
 
 
-def resnet50(num_classes: int, num_domains: int, pretrained: bool = True, **kwargs):
+def resnet50(num_classes: int, num_domains: int, pretrained: bool = True, verbose=False, **kwargs):
     model = ResNet(
-        Bottleneck, [3, 4, 6, 3], num_classes, num_domains, **kwargs
+        Bottleneck, [3, 4, 6, 3], num_classes, num_domains, verbose=verbose, **kwargs
     )
     if pretrained:
-        init_pretrained_weights(model, model_urls['resnet50'])
+        init_pretrained_weights(model, model_urls['resnet50'], verbose=verbose)
     return model
 
 
-def resnet101(num_classes: int, num_domains: int, pretrained: bool = True, **kwargs):
+def resnet101(num_classes: int, num_domains: int, pretrained: bool = True, verbose=False, **kwargs):
     model = ResNet(
-        Bottleneck, [3, 4, 23, 3], num_classes, num_domains, **kwargs
+        Bottleneck, [3, 4, 23, 3], num_classes, num_domains, verbose=verbose, **kwargs
     )
     if pretrained:
-        init_pretrained_weights(model, model_urls['resnet101'])
+        init_pretrained_weights(model, model_urls['resnet101'], verbose=verbose)
     return model
 
 
-def resnet152(num_classes: int, num_domains: int, pretrained: bool = True, **kwargs):
+def resnet152(num_classes: int, num_domains: int, pretrained: bool = True, verbose=False, **kwargs):
     model = ResNet(
-        Bottleneck, [3, 8, 36, 3], num_classes, num_domains, **kwargs
+        Bottleneck, [3, 8, 36, 3], num_classes, num_domains, verbose=verbose, **kwargs
     )
     if pretrained:
-        init_pretrained_weights(model, model_urls['resnet152'])
+        init_pretrained_weights(model, model_urls['resnet152'], verbose=verbose)
     return model
