@@ -1,7 +1,12 @@
 import os
 import json
+import torch
+import shutil
+import yaml
 import pandas as pd
 import numpy as np
+from pathlib import Path
+from optuna.trial import TrialState
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import optuna
@@ -123,3 +128,54 @@ def convert_to_serializable(obj):
     elif isinstance(obj, pd.DataFrame):
         return obj.to_dict(orient='records')
     return obj
+
+
+def save_tuning_results(config_dir: str, results_dir: str):
+    """
+    Save all tuning results in specified folder.
+    """
+    #response = input("Would you like to save the tuning results for all folds in another folder? (y/n): ").strip().lower()
+        
+    #if response != 'y':
+       # print("No custom directory provided. Results will not be externally saved.")
+        #return
+        
+    custom_dir = "/mnt/data/hahlers/tuning/woMS"
+    target_dir = Path(os.path.expanduser(custom_dir))
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        (Path(target_dir) / "configs").mkdir(exist_ok=True)
+        (Path(target_dir) / "results").mkdir(exist_ok=True)
+
+        print("Copying files...")
+
+        config_path = Path(config_dir)
+        if config_path.exists():
+            for fold_dir in Path(config_dir).glob("fold_*"):
+                (target_dir / "configs" / fold_dir.name).mkdir(parents=True, exist_ok=True)
+                for config_file in fold_dir.glob("*.yaml"):
+                    shutil.copy2(config_file, target_dir / "configs" / fold_dir.name / config_file.name)
+
+        results_path = Path(results_dir)
+        if results_path.exists():
+            for result_file in Path(results_dir).glob("*.*"):
+                if result_file.suffix in ['.csv', '.html', '.json']:
+                    shutil.copy2(result_file, target_dir / result_file.name)
+            
+            for fold_dir in Path(results_dir).glob("[0-9]"):
+                (target_dir / "results" / fold_dir.name).mkdir(parents=True, exist_ok=True)
+                for result_file in fold_dir.glob("*"):
+                    if result_file.is_file():
+                        shutil.copy2(result_file, target_dir / "results" / fold_dir.name / result_file.name)
+                ckpt_source = fold_dir / "checkpoints"
+                if ckpt_source.exists():
+                    (target_dir / "results" / fold_dir.name / "checkpoints").mkdir(exist_ok=True)
+                    for ckpt_file in (fold_dir / "checkpoints").glob("*.pt"):
+                        shutil.copy2(ckpt_file, target_dir / "results" / fold_dir.name / "checkpoints" / ckpt_file.name)
+    
+    except Exception as e:
+        print(f"Error while copying files: {e}")
+        return
+        
+    print(f"\nAll results saved to: {target_dir}")

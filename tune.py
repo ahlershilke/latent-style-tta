@@ -8,7 +8,7 @@ from typing import List, Dict
 from models.tuning import HP_Tuner
 from data._load_data import get_lodo_splits
 from data._datasets import DOMAIN_NAMES
-from utils._utils import analyze_and_visualize_studies
+from utils._utils import analyze_and_visualize_studies, save_tuning_results
 from torch.utils.data import DataLoader
 
 def set_seed(seed=42):
@@ -89,6 +89,11 @@ def main():
     else:
         print("Skipping visualizations - not enough trials for analysis")
     
+    save_tuning_results(
+        config_dir="configs",
+        results_dir="experiments/hp_results"
+    )
+
     print("=== All trials completed ===")
 
 
