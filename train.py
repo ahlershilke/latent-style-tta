@@ -57,7 +57,7 @@ class TrainingFramework:
             raise FileNotFoundError(f"Hyperparameter file not found: {hparam_path}")
         
         with open(hparam_path) as f:
-            return json.load(f)['best_params']
+            return json.load(f)['params']
 
 
     def _init_model(self, hparams: Dict) -> nn.Module:
@@ -95,6 +95,13 @@ class TrainingFramework:
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer,
                 T_max=self.config['num_epochs']
+            )
+
+        if hparams['scheduler'] == 'StepLR':
+            scheduler = torch.optim.lr_scheduler.StepLR(
+                optimizer,
+                step_size=hparams['step_size'],
+                gamma=hparams['gamma']
             )
         return optimizer, scheduler
 
@@ -239,12 +246,12 @@ class TrainingFramework:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Industrial Training Framework')
+    parser = argparse.ArgumentParser(description='Training Framework')
     parser.add_argument('--data_root', type=str, required=True, help='Path to dataset')
     parser.add_argument('--hparam_file', type=str, required=True, help='Path to best hyperparameters')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
     parser.add_argument('--num_epochs', type=int, default=50, help='Number of epochs')
-    parser.add_argument('--k_folds', type=int, default=5, help='Number of k-folds')
+    parser.add_argument('--k_folds', type=int, default=4, help='Number of k-folds')
     parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'])
     args = parser.parse_args()
 
@@ -255,7 +262,7 @@ if __name__ == "__main__":
         'num_epochs': args.num_epochs,
         'k_folds': args.k_folds,
         'device': args.device,
-        'log_dir': 'logs/industrial_training',
+        'log_dir': 'logs/training',
         'save_dir': 'saved_models'
     }
     

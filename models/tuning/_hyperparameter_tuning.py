@@ -138,6 +138,8 @@ class HP_Tuner:
         model.to(device)
 
         use_mixstyle = getattr(model, 'use_mixstyle', False)
+        #checkpoint_path = Path("mnt/data/hahlers/tuning/woMS") / str(self.fold_info['fold']) / "checkpoints" / f"checkpoint_trial_{trial.number}.pt"
+        #checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     
         optimizer_name = trial.suggest_categorical("optimizer", ["Adam", "SGD", "AdamW"])
         if optimizer_name == "Adam":
@@ -202,6 +204,7 @@ class HP_Tuner:
             delta=0.001,
             verbose=True,
             path=os.path.join(self.save_dir, "checkpoints", f"checkpoint_trial_{trial.number}.pt"),
+            #path=os.path.join(checkpoint_path),
             trace_func=print
     )
 
