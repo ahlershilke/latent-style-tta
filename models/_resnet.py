@@ -37,7 +37,7 @@ class ResNet(nn.Module):
             num_domains: int,
             fc_dims=None,
             dropout_p=None,
-            use_mixstyle=True,
+            use_mixstyle=False,
             mixstyle_layers: list = [],
             mixstyle_p: float = 0.5,
             mixstyle_alpha: float = 0.3,

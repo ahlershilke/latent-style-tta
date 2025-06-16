@@ -2,6 +2,12 @@ import os
 import shutil
 import pandas as pd
 import numpy as np
+from typing import List, Dict, Any
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from models.tuning._hyperparameter_tuning import EarlyStopping, HP_Tuner
 from pathlib import Path
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -136,7 +142,7 @@ def save_tuning_results(config_dir: str, results_dir: str):
        # print("No custom directory provided. Results will not be externally saved.")
         #return
         
-    custom_dir = "/mnt/data/hahlers/tuning/woMS"
+    custom_dir = "/mnt/data/hahlers/tuning"
     target_dir = Path(os.path.expanduser(custom_dir))
     target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -175,3 +181,207 @@ def save_tuning_results(config_dir: str, results_dir: str):
         return
         
     print(f"\nAll results saved to: {target_dir}")
+
+
+def suggest_params(trial, lodo_params: Dict[str, Any]) -> Dict[str, Any]:
+    params = {}
+        
+    # Learning rate with narrowed range
+    lr_default = 1e-4
+    lr_min = max(1e-6, lodo_params['best_params'].get('lr', lr_default) * 0.5)
+    lr_max = min(1e-2, lodo_params['best_params'].get('lr', lr_default) * 2)
+    params['lr'] = trial.suggest_float("lr", lr_min, lr_max, log=True)
+        
+    # Fix optimizer to best type from LODO
+    params['optimizer'] = lodo_params['best_params'].get('optimizer', 'AdamW')
+        
+    # Fix scheduler to best type from LODO
+    params['scheduler'] = lodo_params['best_params'].get('scheduler', 'StepLR')
+
+    # Constrained parameter ranges
+    wd_default = 1e-4
+    wd_min = max(1e-6, lodo_params['best_params'].get('weight_decay', wd_default) * 0.5)
+    wd_max = min(1e-3, lodo_params['best_params'].get('weight_decay', wd_default) * 2)
+    params['weight_decay'] = trial.suggest_float("weight_decay", wd_min, wd_max, log=True)
+        
+    # Batch size
+    params['batch_size'] = trial.suggest_categorical("batch_size", [8, 16, 32, 64])
+        
+    # Optimizer-specific parameters
+    if params['optimizer'] in ['Adam', 'AdamW']:
+        params['beta1'] = trial.suggest_float("beta1", 0.8, 0.99)
+        params['beta2'] = trial.suggest_float("beta2", 0.9, 0.999)
+        params['eps'] = trial.suggest_float("eps", 1e-8, 1e-6)
+    elif params['optimizer'] == 'SGD':
+        params['momentum'] = trial.suggest_float("momentum", 0.1, 0.9)
+        params['nesterov'] = trial.suggest_categorical("nesterov", [True, False])
+        
+    # Scheduler-specific parameters
+    if params['scheduler'] == 'StepLR':
+        params['step_size'] = trial.suggest_int("step_size", 5, 20)
+        params['gamma'] = trial.suggest_float("gamma", 0.1, 0.9)
+    elif params['scheduler'] == 'CosineAnnealing':
+        params['T_max'] = trial.suggest_int("T_max", 10, 50)
+        params['eta_min'] = trial.suggest_float("eta_min", 1e-6, 1e-3)
+    elif params['scheduler'] == 'ReduceLROnPlateau':
+        params['factor'] = trial.suggest_float("factor", 0.1, 0.5)
+        params['patience'] = trial.suggest_int("patience", 2, 5)
+
+    # Add model architecture parameters
+    dropout_default = 0.1
+    dropout_min = max(0.0, lodo_params['best_params'].get('dropout', dropout_default) - 0.1)
+    dropout_max = min(0.5, lodo_params['best_params'].get('dropout', dropout_default) + 0.1)
+    params['dropout'] = trial.suggest_float("dropout", dropout_min, dropout_max)
+
+    return params
+
+
+def evaluate_global_objective(trial, tuner_instance: HP_Tuner, train_data, val_data, device, save_dir):
+    """ Evaluate the global objective function for hyperparameter tuning."""
+    # 1. Parameter vorschlagen (suggest_params muss in tuner_instance sein)
+    params = tuner_instance.suggest_params(trial)
+    
+    # 2. Modell erstellen
+    model = tuner_instance.create_model(params)
+    model.to(device)
+    
+    # 3. Optimierer und Scheduler einrichten
+    optimizer = create_optimizer(params, model)
+    scheduler = create_scheduler(params, optimizer)
+    
+    # 4. DataLoader vorbereiten
+    train_loader, val_loader = create_dataloaders(train_data, val_data, params['batch_size'])
+    
+    # 5. Training durchführen
+    best_accuracy = train_and_evaluate(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        device=device,
+        checkpoint_path=os.path.join(save_dir, f"global_trial_{trial.number}.pt"),
+        scheduler_type=params['scheduler']
+    )
+    
+    return best_accuracy
+
+# Hilfsfunktionen für bessere Modularität
+def create_optimizer(params, model):
+    optimizer_name = params['optimizer']
+    lr = params['lr']
+    weight_decay = params['weight_decay']
+    
+    if optimizer_name == "Adam":
+        return optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    elif optimizer_name == "AdamW":
+        return optim.AdamW(model.parameters(), lr=lr, 
+                         betas=(params['beta1'], params['beta2']),
+                         eps=params['eps'],
+                         weight_decay=weight_decay)
+    else:
+        return optim.SGD(model.parameters(), lr=lr, 
+                       momentum=params['momentum'],
+                       weight_decay=weight_decay, 
+                       nesterov=params['nesterov'])
+
+def create_scheduler(params, optimizer):
+    scheduler_type = params['scheduler']
+    
+    if scheduler_type == "StepLR":
+        return optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=params['step_size'],
+            gamma=params['gamma']
+        )
+    elif scheduler_type == "CosineAnnealing":
+        return optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=params['T_max'],
+            eta_min=params['eta_min']
+        )
+    return optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='max',
+        factor=params['factor'],
+        patience=params['patience']
+    )
+
+def create_dataloaders(train_data, val_data, batch_size):
+    def collate_fn(batch):
+        imgs = torch.stack([item[0] for item in batch])
+        labels = torch.tensor([item[1] for item in batch])
+        domains = torch.tensor([item[2] for item in batch])
+        return imgs, labels, domains
+
+    train_loader = DataLoader(
+        train_data,
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=True,
+        collate_fn=collate_fn
+    )
+    
+    val_loader = DataLoader(
+        val_data,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=collate_fn
+    )
+    
+    return train_loader, val_loader
+
+def train_and_evaluate(model, train_loader, val_loader, optimizer, scheduler, 
+                      device, checkpoint_path, scheduler_type, max_epochs=20):
+    criterion = nn.CrossEntropyLoss()
+    early_stopper = EarlyStopping(
+        patience=3, 
+        delta=0.001,
+        verbose=False,
+        path=checkpoint_path
+    )
+
+    best_accuracy = 0
+    for epoch in range(max_epochs):
+        # Training
+        model.train()
+        for inputs, labels, _ in train_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+        
+        # Evaluation
+        accuracy = evaluate_model(model, val_loader, device)
+        
+        # Early Stopping und Scheduler
+        early_stopper(accuracy, model)
+        if early_stopper.early_stop:
+            break
+            
+        if scheduler_type == "ReduceLROnPlateau":
+            scheduler.step(accuracy)
+        else:
+            scheduler.step()
+        
+        if accuracy > best_accuracy:
+            best_accuracy = accuracy
+    
+    return best_accuracy
+
+def evaluate_model(model, data_loader, device):
+    model.eval()
+    correct = 0
+    total = 0
+    
+    with torch.no_grad():
+        for inputs, labels, _ in data_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs = model(inputs)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+    
+    return correct / total

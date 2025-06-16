@@ -26,9 +26,10 @@ DOMAIN_NAMES = {
 
 class DomainSubset(Subset):
     """Wraps a dataset and adds domain index to the output."""
-    def __init__(self, dataset, indices, domain_idx):
+    def __init__(self, dataset, indices, domain_idx, original_domain_idx=None):
         super().__init__(dataset, indices)
         self.domain_idx = domain_idx
+        self.original_domain_idx = original_domain_idx or domain_idx # neuer fix, evtl wieder entfernen
     
     def __getitem__(self, idx):
         img, label = super().__getitem__(idx)
@@ -282,6 +283,15 @@ class DomainDataset(MultiDomainDataset):
                 shuffle=False,
                 collate_fn=collate_fn,
             )
+        
+        """
+        test_data = DomainSubset(
+            self.data[self.test_domain],
+            indices=None,
+            domain_idx=len(train_domain_indices),  # Test domain gets the next index
+            original_domain_idx=test_domain_idx
+        )
+        """
 
         return train_loader, val_loader, test_loader
 
@@ -363,7 +373,7 @@ class DomainDataset(MultiDomainDataset):
                 val_subsets.append(DomainSubset(domain_data, val_idx, new_domain_idx))
 
             # 4. Test-Domain mit konsistentem Index
-            test_data = []
+            test_data = []  # TODO hier war was, aber was?
             test_data.append(DomainSubset(
                 self.data[test_domain_idx],
                 indices=list(range(len(self.data[test_domain_idx]))),

@@ -1,27 +1,29 @@
 import os
 import json
 import argparse
+import yaml
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
 from torch.utils.tensorboard import SummaryWriter
 from sklearn.model_selection import KFold
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
+from data._load_data import get_lodo_splits
 from models import resnet50
 from data._datasets import PACS, DOMAIN_NAMES
 
 class TrainingFramework:
     def __init__(self, config: Dict):
         """
-        Training framework with k-fold cross-validation for image classification tasks
+        Training framework with lodo cross-validation for image classification tasks
         
         Args:
             config: Configuration dictionary with
                 - data_root: path to dataset
                 - batch_size: batch size
                 - num_epochs: number of epochs
-                - k_folds: number of folds for k-fold cross-validation
+                - folds: number of folds for lodo cross-validation
                 - device: CUDA/CPU
                 - log_dir: directory for TensorBoard logs
         """
@@ -34,37 +36,36 @@ class TrainingFramework:
         self.full_dataset = PACS(
             root=config['data_root'],
             test_domain=None
-            #augment=self._get_augmentations()
         )
         
-
-    """
-    def _get_augmentations(self):
-        #Industriestandard Augmentations für Bilddaten
-        return transforms.Compose([
-            transforms.RandomResizedCrop(224),
-            transforms.RandomHorizontalFlip(),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
-    """
-
-
-    def _load_best_hparams(self, hparam_path: str) -> Dict:
-        """Loads the best hyperparameters from a JSON file"""
+    # TODO
+    def _load_hparams(self, hparam_path: str) -> Dict:
+        """Loads hyperparameters from a JSON file, optionally for a specific domain"""
         if not os.path.exists(hparam_path):
             raise FileNotFoundError(f"Hyperparameter file not found: {hparam_path}")
         
         with open(hparam_path) as f:
-            return json.load(f)['params']
+            data = json.load(f)
+            
+        if domain is not None:
+            # Find parameters for specific domain
+            for entry in data['domain_specific']:
+                if entry['domain'] == domain:
+                    return entry['params']
+            raise ValueError(f"No parameters found for domain {domain}")
+        
+        # Return global parameters
+        return data['global']['params']
 
 
+    #TODO soll modell mit mixstyle initialisieren wenn es so als parameter übergeben wird, 
+    # ansonsten ohne mixstyle
     def _init_model(self, hparams: Dict) -> nn.Module:
         """Initialises the best model with given hyperparameters"""
         model = resnet50(
             num_classes=len(self.full_dataset.classes),
             num_domains=len(DOMAIN_NAMES['PACS']),
+            batch_size=hparams['batch_size'],
             use_mixstyle=True,
             mixstyle_layers=hparams['mixstyle_layers'].split('+'),
             mixstyle_p=hparams['mixstyle_p'],
@@ -77,24 +78,27 @@ class TrainingFramework:
 
     def _init_optimizer(self, model: nn.Module, hparams: Dict) -> Tuple:
         """Initialises the optimizer and learning rate scheduler"""
-        if hparams['optimizer'] == 'AdamW':
+        if hparams['optimizer'] == 'AdamW' or hparams['optimizer'] == 'Adam':
             optimizer = torch.optim.AdamW(
                 model.parameters(),
                 lr=hparams['lr'],
-                weight_decay=hparams['weight_decay']
+                weight_decay=hparams['weight_decay'],
+                betas=(hparams['beta1'], hparams['beta2']),
             )
         elif hparams['optimizer'] == 'SGD':
             optimizer = torch.optim.SGD(
                 model.parameters(),
                 lr=hparams['lr'],
                 momentum=hparams.get('momentum', 0.9),
-                weight_decay=hparams['weight_decay']
+                weight_decay=hparams['weight_decay'],
+                nesterov=hparams.get('nesterov', False),
             )
         
         if hparams['scheduler'] == 'CosineAnnealing':
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer,
-                T_max=self.config['num_epochs']
+                T_max=self.config['num_epochs'], #T_max= hparams['T_max'],
+                eta_min=hparams['eta_min']
             )
 
         if hparams['scheduler'] == 'StepLR':
@@ -104,12 +108,6 @@ class TrainingFramework:
                 gamma=hparams['gamma']
             )
         return optimizer, scheduler
-
-
-    def _kfold_split(self) -> List[Tuple]:
-        """Generates k-fold splits for cross-validation"""
-        kf = KFold(n_splits=self.config['k_folds'], shuffle=True)
-        return list(kf.split(range(len(self.full_dataset))))
 
 
     def train_epoch(self, model: nn.Module, loader: DataLoader, 
@@ -157,27 +155,28 @@ class TrainingFramework:
     def run(self, hparam_path: str):
         """Train the model using k-fold cross-validation"""
         hparams = self._load_best_hparams(hparam_path)
-        kfold_splits = self._kfold_split()
+        # achtung: lodo splits trainieren jedes Modell für jede einzelne Domain, dh kein spezielles Training
+        lodo_splits = get_lodo_splits()
         results = {}
         
-        for fold, (train_idx, val_idx) in enumerate(kfold_splits):
+        for fold, (train_data, val_data, test_data) in enumerate(lodo_splits):
             print(f"\n=== Fold {fold+1}/{self.config['k_folds']} ===")
             self.current_fold = fold + 1
             
             # Datenaufteilung
-            train_set = Subset(self.full_dataset, train_idx)
-            val_set = Subset(self.full_dataset, val_idx)
+            train_set = Subset(self.full_dataset, train_data)
+            val_set = Subset(self.full_dataset, val_data)
             
             train_loader = DataLoader(
                 train_set,
-                batch_size=self.config['batch_size'],
+                batch_size=hparams['batch_size'],
                 shuffle=True,
                 num_workers=4,
                 pin_memory=True
             )
             val_loader = DataLoader(
                 val_set,
-                batch_size=self.config['batch_size'],
+                batch_size=hparams['batch_size'],
                 shuffle=False,
                 num_workers=4,
                 pin_memory=True
@@ -245,34 +244,37 @@ class TrainingFramework:
             }, f, indent=2)
 
 
+#TODO wenn --mode=domain, dann müssen vier Modelle trainiert werden, die automatisch die richtigen yamls
+# als grundlage benutzen
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Training Framework')
     parser.add_argument('--data_root', type=str, required=True, help='Path to dataset')
     parser.add_argument('--hparam_file', type=str, required=True, help='Path to best hyperparameters')
-    parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
     parser.add_argument('--num_epochs', type=int, default=50, help='Number of epochs')
-    parser.add_argument('--k_folds', type=int, default=4, help='Number of k-folds')
+    parser.add_argument('--folds', type=int, default=4, help='Number of folds')
     parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'])
+    parser.add_argument('--mode', type=str, default='global', choices=['global', 'domain'])
     args = parser.parse_args()
 
     # Konfiguration
     config = {
-        'data_root': args.data_root,
-        'batch_size': args.batch_size,
+        'data_root': "experiments/train_results",
         'num_epochs': args.num_epochs,
-        'k_folds': args.k_folds,
+        'folds': args.folds,
         'device': args.device,
+        'mode': args.mode,
         'log_dir': 'logs/training',
         'save_dir': 'saved_models'
     }
     
     # Verzeichnisse erstellen
+    os.makedirs(config['data_root'], exist_ok=True)
     os.makedirs(config['log_dir'], exist_ok=True)
     os.makedirs(config['save_dir'], exist_ok=True)
 
     # Training starten
     trainer = TrainingFramework(config)
-    results = trainer.run_kfold_training(args.hparam_file)
+    results = trainer.run(args.hparam_file)
     
     print("\n=== Training Complete ===")
     print(f"Average Validation Accuracy: {results['average_val_acc']:.2%}")
