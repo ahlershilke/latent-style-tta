@@ -174,7 +174,7 @@ def main():
         print(f"Evaluating on domain: {domain_name}")
         
         eval_tuner = HP_Tuner(
-            train_data=None,  # We're only evaluating
+            train_data=None,  # only evaluation
             val_data=None,
             num_classes=7,
             num_domains=len(DOMAIN_NAMES['PACS']) - 1,

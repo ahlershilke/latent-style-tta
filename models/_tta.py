@@ -5,7 +5,7 @@ class TTAClassifier(nn.Module):
     def __init__(self, backbone, classifier, domain_shifts, ensemble_mode='mean'):
         """
         backbone: gefrorenes ResNet ohne Klassifikationskopf
-        classifier: z. B. ein MLP oder linearer Klassifikator
+        classifier: z.B. ein MLP oder linearer Klassifikator
         domain_shifts: Liste von Vektoren oder nn.Parameter (m bekannte Domänen)
         ensemble_mode: 'mean' oder 'weighted'
         """

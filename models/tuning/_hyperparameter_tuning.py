@@ -613,237 +613,9 @@ class HP_Tuner:
             print(f"Error in binned parameter analysis: {str(e)}")
             return {}
         
-    """
+
     def run_global_tuning(self, lodo_results_dir: str, n_trials: int = 30) -> Dict[str, Any]:
         #Determine optimal global parameters without training
-        # 1. Analyze LODO results to get parameter distributions
-        lodo_params = self.compute_global_best_params(lodo_results_dir, use_mixstyle=False)
-    
-        if not lodo_params:
-            raise ValueError("Could not load LODO results for global tuning")
-
-        # 2. Create parameter suggestion function
-        def suggest_params(trial):
-            params = {}
-        
-            # Learning rate with narrowed range
-            params['lr'] = trial.suggest_float(
-                "lr",
-                max(1e-6, lodo_params['best_params'].get('lr', 1e-4) * 0.5),
-                min(1e-2, lodo_params['best_params'].get('lr', 1e-4) * 2),
-                log=True
-            )
-        
-            # Fix optimizer to best type from LODO
-            params['optimizer'] = lodo_params['best_params'].get('optimizer')
-        
-            # Constrained parameter ranges
-            params['weight_decay'] = trial.suggest_float(
-                "weight_decay",
-                max(1e-6, lodo_params['best_params'].get('weight_decay', 1e-4) * 0.5),
-                min(1e-3, lodo_params['best_params'].get('weight_decay', 1e-4) * 2),
-                log=True
-            )
-        
-            # Add other parameters similarly...
-            params['batch_size'] = trial.suggest_categorical("batch_size", [8, 16, 32, 64])
-        
-            if params['optimizer'] in ['Adam', 'AdamW']:
-                params['beta1'] = trial.suggest_float("beta1", 0.8, 0.99)
-                params['beta2'] = trial.suggest_float("beta2", 0.9, 0.999)
-                params['eps'] = trial.suggest_float("eps", 1e-8, 1e-6)
-            elif params['optimizer'] == 'SGD':
-                params['momentum'] = trial.suggest_float("momentum", 0.1, 0.9)
-                params['nesterov'] = trial.suggest_categorical("nesterov", [True, False])
-            
-            # Scheduler-specific parameters
-            if params['scheduler'] == 'StepLR':
-                params['step_size'] = trial.suggest_int("step_size", 5, 20)
-                params['gamma'] = trial.suggest_float("gamma", 0.1, 0.9)
-            elif params['scheduler'] == 'CosineAnnealing':
-                params['T_max'] = trial.suggest_int("T_max", 10, 50)
-                params['eta_min'] = trial.suggest_float("eta_min", 1e-6, 1e-3)
-            elif params['scheduler'] == 'ReduceLROnPlateau':
-                params['factor'] = trial.suggest_float("factor", 0.1, 0.5)
-                params['patience'] = trial.suggest_int("patience", 2, 5)
-        
-            # Add model architecture parameters
-            params['dropout'] = trial.suggest_float(
-                "dropout",
-                max(0.0, lodo_params['best_params'].get('dropout', 0.1) - 0.1),
-                min(0.5, lodo_params['best_params'].get('dropout', 0.1) + 0.1)
-            )
-
-            return params
-
-        # 3. Create study and store all suggested parameters
-        all_params = []
-        study = optuna.create_study(direction="maximize")
-    
-        for _ in range(n_trials):
-            trial = study.ask()
-            params = suggest_params(trial)
-            all_params.append(params)  # Jetzt wird params gespeichert
-            study.tell(trial, 0.0)  # Dummy value
-
-        # 4. Parameter analysis (statt dummy evaluation)
-        # Beispiel: Median der vorgeschlagenen Parameter nehmen
-        df_params = pd.DataFrame(all_params)
-
-        # Get mode for categorical parameters
-        categorical_params = ['optimizer', 'scheduler', 'mixstyle_layers']
-        best_categorical = {}
-        for param in categorical_params:
-            if param in df_params.columns:
-                best_categorical[param] = df_params[param].mode()[0] if not df_params[param].mode().empty else lodo_params['best_params'].get(param, 'AdamW')
-    
-        # Get median for numeric parameters
-        numeric_params = [col for col in df_params.columns if col not in categorical_params]
-        best_numeric = df_params[numeric_params].median().to_dict()
-
-        # 5. Combine with LODO best params
-        final_params = {
-            **lodo_params['best_params'],  # Basis-Parameter
-            **best_categorical,
-            **best_numeric
-        }
-
-        # 6. Save results
-        os.makedirs(os.path.join(self.save_dir, "global_params"), exist_ok=True)
-        with open(os.path.join(self.save_dir, "global_params", "best_global_params.json"), "w") as f:
-            json.dump({
-                "best_params": final_params,
-                "parameter_stats": df_params.describe().to_dict(),
-                "lodo_stats": {
-                    "mean_val_acc": lodo_params['mean_val_acc'],
-                    "std_over_domains": lodo_params['std_over_domains']
-                }
-            }, f, indent=2)
-    
-        return final_params
-    """
-
-    """
-    def run_global_tuning(self, lodo_results_dir: str, n_trials: int = 30) -> Dict[str, Any]:
-        #Determine optimal global parameters without training
-        # 1. Analyze LODO results to get parameter distributions
-        lodo_params = self.compute_global_best_params(lodo_results_dir, use_mixstyle=False)
-
-        if not lodo_params:
-            raise ValueError("Could not load LODO results for global tuning")
-
-        # 2. Create parameter suggestion function
-        def suggest_params(trial):
-            params = {}
-    
-            # Learning rate with narrowed range
-            params['lr'] = trial.suggest_float(
-                "lr",
-                max(1e-6, lodo_params['best_params'].get('lr', 1e-4) * 0.5),
-                min(1e-2, lodo_params['best_params'].get('lr', 1e-4) * 2),
-                log=True
-            )
-    
-            # Fix optimizer to best type from LODO
-            params['optimizer'] = lodo_params['best_params'].get('optimizer', 'AdamW')
-        
-            # Fix scheduler to best type from LODO
-            params['scheduler'] = lodo_params['best_params'].get('scheduler', 'StepLR')
-    
-            # Constrained parameter ranges
-            params['weight_decay'] = trial.suggest_float(
-                "weight_decay",
-                max(1e-6, lodo_params['best_params'].get('weight_decay', 1e-4) * 0.5),
-                min(1e-3, lodo_params['best_params'].get('weight_decay', 1e-4) * 2),
-                log=True
-            )
-    
-            # Batch size
-            params['batch_size'] = trial.suggest_categorical("batch_size", [8, 16, 32, 64])
-    
-            # Optimizer-specific parameters
-            if params['optimizer'] in ['Adam', 'AdamW']:
-                params['beta1'] = trial.suggest_float("beta1", 0.8, 0.99)
-                params['beta2'] = trial.suggest_float("beta2", 0.9, 0.999)
-                params['eps'] = trial.suggest_float("eps", 1e-8, 1e-6)
-            elif params['optimizer'] == 'SGD':
-                params['momentum'] = trial.suggest_float("momentum", 0.1, 0.9)
-                params['nesterov'] = trial.suggest_categorical("nesterov", [True, False])
-        
-            # Scheduler-specific parameters
-            if params['scheduler'] == 'StepLR':
-                params['step_size'] = trial.suggest_int("step_size", 5, 20)
-                params['gamma'] = trial.suggest_float("gamma", 0.1, 0.9)
-            
-            elif params['scheduler'] == 'CosineAnnealing':
-                params['T_max'] = trial.suggest_int("T_max", 10, 50)
-                params['eta_min'] = trial.suggest_float("eta_min", 1e-6, 1e-3)
-            
-            elif params['scheduler'] == 'ReduceLROnPlateau':
-                params['factor'] = trial.suggest_float("factor", 0.1, 0.5)
-                params['patience'] = trial.suggest_int("patience", 2, 5)
-
-            # Add model architecture parameters
-            params['dropout'] = trial.suggest_float(
-                "dropout",
-                max(0.0, lodo_params['best_params'].get('dropout', 0.1) - 0.1),
-                min(0.5, lodo_params['best_params'].get('dropout', 0.1) + 0.1)
-            )
-
-            return params
-
-        def global_objective(trial):
-        # Only suggest parameters, no actual training
-            params = suggest_params(trial)
-        
-            # Calculate a dummy score based on parameter distances from LODO best
-            score = 0.0
-            for param, value in params.items():
-                if param in lodo_params['best_params'] and lodo_params['best_params'][param] is not None:
-                    if isinstance(value, (int, float)):
-                        lodo_value = lodo_params['best_params'][param]
-                        score -= abs(value - lodo_value) / (abs(lodo_value) + 1e-8)
-        
-            return score
-
-        # 3. Create study and optimize
-        study = optuna.create_study(direction="maximize")
-    
-        # Store all suggested parameters (for analysis later)
-        all_params = []
-    
-        def optimization_callback(study, trial):
-            all_params.append(trial.params)
-    
-        study.optimize(
-            global_objective,  # Use the same objective as before
-            n_trials=n_trials,
-            callbacks=[optimization_callback]
-        )
-
-        # 4. Get the best parameters from the study
-        final_params = study.best_params
-    
-        # 5. Save results
-        os.makedirs(os.path.join(self.save_dir, "global_params"), exist_ok=True)
-        with open(os.path.join(self.save_dir, "global_params", "best_global_params.json"), "w") as f:
-            json.dump({
-                "best_params": final_params,
-                "study_results": {
-                    "best_value": study.best_value,
-                    "best_trial": study.best_trial.number,
-                },
-                "lodo_stats": {
-                    "mean_val_acc": lodo_params['mean_val_acc'],
-                    "std_over_domains": lodo_params['std_over_domains']
-                }
-            }, f, indent=2)
-
-        return final_params
-    """
-
-    def run_global_tuning(self, lodo_results_dir: str, n_trials: int = 30) -> Dict[str, Any]:
-        """Determine optimal global parameters without training"""
         # 1. Analyze LODO results to get parameter distributions
         lodo_params = self.compute_global_best_params(lodo_results_dir, use_mixstyle=False)
 
@@ -945,13 +717,17 @@ class HP_Tuner:
         # 4. Get the best parameters from the study or fallback to LODO params
         if len(study.trials) > 0 and study.best_trial is not None:
             final_params = study.best_params
+            final_params.update({
+                'optimizer': study.best_params.get('optimizer'),
+                'scheduler': study.best_params.get('scheduler')
+            })
         else:
             print("No valid trials completed, using LODO params as fallback")
             final_params = lodo_params['best_params']
 
         # 5. Save results
-        os.makedirs(os.path.join(self.save_dir, "global_params"), exist_ok=True)
-        with open(os.path.join(self.save_dir, "global_params", "best_global_params.json"), "w") as f:
+        os.makedirs(self.save_dir, exist_ok=True)
+        with open(os.path.join(self.save_dir, "best_global_params.json"), "w") as f:
             json.dump({
                 "best_params": final_params,
                 "study_results": {
@@ -964,4 +740,12 @@ class HP_Tuner:
                 }
             }, f, indent=2)
 
+        base_dir = Path(self.save_dir).parent.parent.parent
+        config_dir = base_dir / "configs"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        
+        with open(os.path.join(config_dir, "global_config.yaml"), "w") as f:
+            yaml.safe_dump(final_params, f, sort_keys=False)
+
         return final_params
+    
