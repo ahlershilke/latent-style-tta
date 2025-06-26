@@ -6,6 +6,7 @@ from pathlib import Path
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import optuna
+from typing import Dict
 
 
 def analyze_and_visualize_studies(all_studies, save_dir, use_mixstyle: bool):
@@ -148,6 +149,8 @@ def save_tuning_results(config_dir: str, results_dir: str):
 
         config_path = Path(config_dir)
         if config_path.exists():
+            for config_file in config_path.glob("*.yaml"):
+                shutil.copy2(config_file, target_dir / "configs" / config_file.name)
             for fold_dir in Path(config_dir).glob("fold_*"):
                 (target_dir / "configs" / fold_dir.name).mkdir(parents=True, exist_ok=True)
                 for config_file in fold_dir.glob("*.yaml"):
@@ -175,3 +178,55 @@ def save_tuning_results(config_dir: str, results_dir: str):
         return
         
     print(f"\nAll results saved to: {target_dir}")
+
+
+def save_training_results(config: Dict, target_dir: str = "/mnt/data/hahlers/training") -> None:
+    """
+    Save all training results (configs, models, visualizations) to a specified folder.
+    
+    Args:
+        target_dir: Base directory where results should be saved (default: "/mnt/data/hahlers/training")
+    """
+    target_path = Path(os.path.expanduser(target_dir))
+    target_path.mkdir(parents=True, exist_ok=True)
+
+    try:
+        # Create subdirectories
+        (target_path / "saved_models").mkdir(exist_ok=True)
+        (target_path / "visualizations").mkdir(exist_ok=True)
+        (target_path / "logs").mkdir(exist_ok=True)
+
+        print("Copying training results...")
+
+        # Copy saved models
+        models_dir = Path(config['save_dir'])
+        if models_dir.exists():
+            for model_file in models_dir.glob("*.pt"):
+                shutil.copy2(model_file, target_path / "saved_models" / model_file.name)
+            # Copy results JSON
+            results_file = models_dir / "lodo_results.json"
+            if results_file.exists():
+                shutil.copy2(results_file, target_path / "lodo_results.json")
+
+        # Copy visualizations
+        vis_dir = Path(config['vis_dir'])
+        if vis_dir.exists():
+            for vis_file in vis_dir.glob("*"):
+                if vis_file.is_file():
+                    shutil.copy2(vis_file, target_path / "visualizations" / vis_file.name)
+                elif vis_file.is_dir():  # For subdirectories like domain-specific visualizations
+                    (target_path / "visualizations" / vis_file.name).mkdir(exist_ok=True)
+                    for sub_file in vis_file.glob("*"):
+                        shutil.copy2(sub_file, target_path / "visualizations" / vis_file.name / sub_file.name)
+
+        # Copy TensorBoard logs
+        log_dir = Path(config['log_dir'])
+        if log_dir.exists():
+            for log_file in log_dir.glob("*"):
+                shutil.copy2(log_file, target_path / "logs" / log_file.name)
+
+    except Exception as e:
+        print(f"Error while copying training results: {e}")
+        return
+        
+    print(f"\nAll training results saved to: {target_path}")

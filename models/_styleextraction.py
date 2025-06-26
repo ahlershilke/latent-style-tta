@@ -225,6 +225,7 @@ class StyleStatistics(nn.Module):
                 for pair in self.layer_pairs
             )
         
+        """
         elif self.mode == "attention":
             # weighted average based on layer weights
             assert len(self.layer_weights) == len(self.mu_dict), "Layer weights mismatch!"
@@ -239,6 +240,7 @@ class StyleStatistics(nn.Module):
                 weights[i] * self.sig_dict[str(i)][domain_idx] 
                 for i in range(len(self.sig_dict))
             )
+        """
 
         return mu.unsqueeze(-1).unsqueeze(-1), sig.unsqueeze(-1).unsqueeze(-1)
 

@@ -56,7 +56,7 @@ class EarlyStopping:
             self.counter = 0
 
     def save_checkpoint(self, val_loss, model):
-        '''Saves model when validation loss decreases.'''
+        """Saves model when validation loss decreases."""
         if self.verbose:
             self.trace_func(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}). Saving model...')
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -87,7 +87,7 @@ class HP_Tuner:
 
     def create_model(self, params_or_trial, verbose=False):
         #model_type = trial.suggest_categorical("model_type", ["resnet18", "resnet34", "resnet50", "resnet101"])
-        model_type = "resnet50"
+        model_type = "resnet18"
     
         actual_layers = []
         use_mixstyle = False
@@ -235,7 +235,7 @@ class HP_Tuner:
             with torch.no_grad():
                 for inputs, labels, domain_idx in val_loader:
                     inputs, labels, domain_idx = inputs.to(device), labels.to(device), domain_idx.to(device)
-                    outputs = model(inputs, domain_idx)
+                    outputs = model(inputs, domain_idx)                         #TODO ??!!
                     val_loss += criterion(outputs, labels).item()
                     _, predicted = torch.max(outputs.data, 1)
                     total += labels.size(0)
@@ -288,6 +288,13 @@ class HP_Tuner:
                 trial = sorted_trials[i]
                 model = self.create_model(trial, verbose=False)
                 model.to(self.device)
+
+                checkpoint_path = os.path.join(checkpoints_dir, f"checkpoint_trial_{trial.number}.pt")
+                if os.path.exists(checkpoint_path):
+                    checkpoint = torch.load(checkpoint_path, map_location=self.device)
+                    model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+                else:
+                    print(f"Checkpoint not found for trial {trial.number}. Saving untrained model.")
         
                 model_path = os.path.join(models_dir, f"top_{i+1}_model.pt")
                 torch.save({
@@ -633,10 +640,10 @@ class HP_Tuner:
             params['lr'] = trial.suggest_float("lr", lr_min, lr_max, log=True)
         
             # Fix optimizer to best type from LODO
-            params['optimizer'] = lodo_params['best_params'].get('optimizer', 'AdamW')
+            params['optimizer'] = lodo_params['best_params'].get('optimizer') #, 'AdamW')
         
             # Fix scheduler to best type from LODO
-            params['scheduler'] = lodo_params['best_params'].get('scheduler', 'StepLR')
+            params['scheduler'] = lodo_params['best_params'].get('scheduler') #, 'StepLR')
 
             # Constrained parameter ranges
             wd_default = 1e-4
@@ -673,11 +680,18 @@ class HP_Tuner:
             dropout_max = min(0.5, lodo_params['best_params'].get('dropout', dropout_default) + 0.1)
             params['dropout'] = trial.suggest_float("dropout", dropout_min, dropout_max)
 
-            return params
+            optimizer = params['optimizer']
+            scheduler = params['scheduler']
+
+            return params, optimizer, scheduler
 
         def global_objective(trial):
             try:
-                params = suggest_params(trial)
+                params, optimizer, scheduler = suggest_params(trial)
+
+                trial.set_user_attr("optimizer", optimizer)
+                trial.set_user_attr("scheduler", scheduler)
+                trial.set_user_attr("complete_params", params)
             
                 # Calculate a score based on parameter distances from LODO best
                 score = 0.0
@@ -711,15 +725,14 @@ class HP_Tuner:
             )
         except Exception as e:
             print(f"Optimization failed: {str(e)}")
-            # Fallback to LODO params if optimization fails
-            return lodo_params['best_params']
+            return lodo_params['best_params']   # fallback to LODO params if optimization fails
 
         # 4. Get the best parameters from the study or fallback to LODO params
         if len(study.trials) > 0 and study.best_trial is not None:
-            final_params = study.best_params
+            final_params = study.best_trial.user_attrs["complete_params"]
             final_params.update({
-                'optimizer': study.best_params.get('optimizer'),
-                'scheduler': study.best_params.get('scheduler')
+                'optimizer': study.best_trial.user_attrs["optimizer"],
+                'scheduler': study.best_trial.user_attrs["scheduler"]
             })
         else:
             print("No valid trials completed, using LODO params as fallback")

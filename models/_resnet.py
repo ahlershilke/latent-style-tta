@@ -163,6 +163,9 @@ class ResNet(nn.Module):
         if self.mixstyle is not None and 'layer4' in self.mixstyle_layers:
             x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=3)
 
+        #x = self.avgpool(x)
+        #x = torch.flatten(x, 1)
+
         return x
 
     def forward(

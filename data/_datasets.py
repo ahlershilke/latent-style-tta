@@ -28,12 +28,14 @@ class DomainSubset(Subset):
     """Wraps a dataset and adds domain index to the output."""
     def __init__(self, dataset, indices, domain_idx, original_domain_idx=None):
         super().__init__(dataset, indices)
+        self.indices = list(indices) if not isinstance(indices, list) else indices
         self.domain_idx = domain_idx
         self.original_domain_idx = original_domain_idx or domain_idx # neuer fix, evtl wieder entfernen
     
     def __getitem__(self, idx):
         img, label = super().__getitem__(idx)
         return img, label, self.domain_idx
+
 
 class MultiDomainDataset:
     domains = None
@@ -119,6 +121,7 @@ class DomainDataset(MultiDomainDataset):
         self.classes = list(self.data[-1].classes)
         self.idx_to_class = dict(zip(range(self.num_classes), self.classes))
 
+
     def get_domain_sizes(self) -> defaultdict:
         """Returns sizes of all domains."""
         size_dict = None
@@ -129,91 +132,6 @@ class DomainDataset(MultiDomainDataset):
                 size_dict[domain_name_map[i]] = len(domain_dataset.imgs)
         return size_dict
 
-    """
-    def generate_loaders(
-        self,
-        batch_size: int = 32,
-        test_size: float = 0.2,
-        stratify: bool = True,
-    ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-        
-        #Generates DataLoaders for training and testing domains with domain labels.
-
-        #:param test_size: Size of the validation partition (default: 0.2).
-        #:param batch_size: Size of the batch. (default: 32)
-        #:param stratify: Whether to stratify class distribution (default: True).
-        #:return: A tuple of DataLoaders for (train, val, test), where each batch is (images, labels, domain_indices).
-        
-
-        assert all(len(item) == 3 for item in self), "Dataset has to return (img, label, domain)"
-
-        # custom collate function to preserve domain indices
-        def collate_fn(batch):
-            imgs = torch.stack([item[0] for item in batch])
-            labels = torch.tensor([item[1] for item in batch])
-            domains = torch.tensor([item[2] for item in batch])  # shape: [batch_size]
-            #domains = torch.tensor([int(item[2]) for item in batch])
-            return imgs, labels, domains
-
-        # split data into train/val subsets per domain
-        train_domains = [domain for i, domain in enumerate(self.data) if i != self.test_domain]
-        train_subsets = []
-        val_subsets = []
-
-        for dom in train_domains:
-            targets = dom.targets
-            if stratify:
-                train_idx, valid_idx = train_test_split(
-                    np.arange(len(targets)), 
-                    test_size=test_size, 
-                    random_state=42, 
-                    shuffle=True, 
-                    stratify=targets
-                )
-            else:
-                train_idx, valid_idx = train_test_split(
-                    np.arange(len(targets)), 
-                    test_size=test_size, 
-                    random_state=42, 
-                    shuffle=True
-                )
-
-            domain_idx = self.domain_to_idx[dom.root.split(os.sep)[-2]]  # oder einfach domain_idx = i, je nach Kontext
-            train_subsets.append(DomainSubset(dom, train_idx, domain_idx))
-            val_subsets.append(DomainSubset(dom, valid_idx, domain_idx))
-
-        # create concatenated datasets
-        train_split = ConcatDataset(train_subsets)
-        val_split = ConcatDataset(val_subsets)
-
-        # create DataLoaders with collate_fn
-        train_loader = DataLoader(
-            train_split,
-            batch_size=batch_size,
-            shuffle=True,
-            drop_last=True,
-            collate_fn=collate_fn,
-        )
-
-        val_loader = DataLoader(
-            val_split,
-            batch_size=batch_size,
-            shuffle=True,
-            drop_last=True,
-            collate_fn=collate_fn,
-        )
-
-        test_loader = None
-        if self.test_domain is not None:
-            test_loader = DataLoader(
-                self.data[self.test_domain],
-                batch_size=batch_size,
-                shuffle=False,
-                collate_fn=collate_fn,
-            )  
-
-        return train_loader, val_loader, test_loader
-    """
 
     def generate_loaders(
         self,
@@ -426,13 +344,17 @@ class PACS(DomainDataset):
             domain_data.domain_idx = domain_idx
 
     def __getitem__(self, index):
-        for domain_idx, domain_data in enumerate(self.data):
-            if index < len(domain_data):
-                img, label = domain_data[index]
-                return img, label, domain_idx
-            index -= len(domain_data)
-        
-        raise IndexError("Index out of range")
+        if isinstance(index, tuple):  # Nur für DomainSubset nötig
+            domain_idx, sample_idx = index[0], index[1]
+            img, label = self.data[domain_idx][sample_idx]
+            return img, label, domain_idx
+        else:  # Standardfall
+            for domain_idx, domain_data in enumerate(self.data):
+                if index < len(domain_data):
+                    img, label = domain_data[index]
+                    return img, label, domain_idx
+                index -= len(domain_data)
+            raise IndexError("Index out of range")
     
     def __len__(self):
         return sum(len(d) for d in self.data)
