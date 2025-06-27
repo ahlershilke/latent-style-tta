@@ -278,7 +278,7 @@ class TrainingFramework:
             
                 if val_acc > best_val_acc:
                     best_val_acc = val_acc
-                    self._save_model(model, f"best_fold_{domain_idx}.pt")
+                    self._save_model(model, f"best_fold_{domain_name}.pt")
                     best_epoch_stats = {
                         'train_loss': train_loss,
                         'val_loss': val_loss,

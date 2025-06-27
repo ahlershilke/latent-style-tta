@@ -102,7 +102,7 @@ class MixStyle(nn.Module):
             # random shuffle
             perm = torch.randperm(B)
 
-        elif self.mix == 'crossdomain': # TODO wird noch gebraucht?
+        elif self.mix == 'crossdomain':
             # split into two halves and swap the order
             perm = torch.arange(B - 1, -1, -1)  # inverse index
             perm_b, perm_a = perm.chunk(2)

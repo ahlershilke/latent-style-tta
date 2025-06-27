@@ -9,7 +9,7 @@ class StyleStatistics(nn.Module):
     def __init__(self,
         num_domains: int,
         num_layers: int,
-        mode: str = "selective",  # "average", "selective", "paired", "attention", "single"
+        mode: str = "selective",  # "average", "selective", "paired", "single", "all"
         layer_config=None,      # for "selective", "paired" or "single"
         use_ema: bool = True,  # exponential moving average
         ema_momentum: float = DEFAULT_MOMENTUM,  # momentum for EMA
@@ -29,6 +29,7 @@ class StyleStatistics(nn.Module):
                 - "selective": Use only specified layers (requires layer_config).
                 - "paired": Mix between layer pairs (requires layer_config).
                 - "attention": Weighted average using learned attention weights.
+                - "all": Average across all layers, similar to "average" but with explicit layer handling.
             layer_config: Configuration specific to mode:
                 - For "selective": List of layer indices to use (e.g., [0, 2]).
                 - For "paired": List of layer index pairs (e.g., [(0,1), (1,2)]).
@@ -186,6 +187,7 @@ class StyleStatistics(nn.Module):
         self.sig_dict[layer_idx, domain_idx] = (self.sig_dict[layer_idx, domain_idx] * total + sig) / (total + 1)
         self.count[domain_idx] += 1
 
+
     # TODO funktionalität ist noch nicht ganz da, man kann nicht richtig zwischen modes switchen
     def get_style_stats(self, domain_idx: int):
         """Returns the style statistics for the given domain index.
@@ -224,6 +226,12 @@ class StyleStatistics(nn.Module):
                 self.sig_dict[str(pair[0])][domain_idx] + self.sig_dict[str(pair[1])][domain_idx]
                 for pair in self.layer_pairs
             )
+        
+        #TODO
+        elif self.mode == "all":
+            # averaging across all layers, similar to "average" but with explicit layer handling
+            mu = sum(self.mu_dict[str(i)][domain_idx] for i in range(self.num_layers))
+            sig = sum(self.sig_dict[str(i)][domain_idx] for i in range(self.num_layers))
         
         """
         elif self.mode == "attention":
@@ -317,12 +325,12 @@ class StyleStatistics(nn.Module):
         return style_stats
     
 
-    def save(self, path) -> None:
+    def save_style_stats(self, path) -> None:
         torch.save(self.state_dict(), path)
 
 
     @classmethod
-    def load(cls, self, path, device="cuda") -> None:
+    def load_style_stats(cls, self, path, device="cuda") -> None:
         state_dict = torch.load(path, map_location=device)
         self.load_state_dict(state_dict)
 
