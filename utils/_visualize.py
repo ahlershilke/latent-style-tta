@@ -35,7 +35,7 @@ class Visualizer:
             os.makedirs(dir_path, exist_ok=True)
 
 
-    def _plot_training_curves(self, train_losses, val_losses, val_accuracies, test_accuracies, domain):
+    def _plot_training_curves(self, train_losses, val_losses, test_losses, train_accuracies, val_accuracies, test_accuracies, domain):
         """Plot training and validation metrics over epochs"""
         plt.figure(figsize=(12, 5))
 
@@ -43,21 +43,21 @@ class Visualizer:
         plt.subplot(1, 2, 1)
         plt.plot(train_losses, label='Training Loss')
         plt.plot(val_losses, label='Validation Loss')
+        plt.plot(test_losses, label='Test Loss')
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
-        plt.title(f'Domain {domain}: Training vs Validation Loss')
+        plt.title(f'Domain {domain}: Training vs Validation vs Test Loss')
         plt.legend()
         
         # Accuracy plot
         plt.subplot(1, 2, 2)
+        plt.plot(train_accuracies, label='Training Accuracy', color='blue')
         plt.plot(val_accuracies, label='Validation Accuracy', color='green')
-
-        if test_accuracies is not None:
-            plt.plot(test_accuracies, label='Test Accuracy', color='red')
+        plt.plot(test_accuracies, label='Test Accuracy', color='red')
         
         plt.xlabel('Epoch')
         plt.ylabel('Accuracy')
-        plt.title(f'Domain {domain}: Validation and Test Accuracy')
+        plt.title(f'Domain {domain}: Training, Validation and Test Accuracy')
         plt.legend()
         
         plt.tight_layout()

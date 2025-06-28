@@ -157,6 +157,8 @@ class TrainingFramework:
         """One epoch of training"""
         model.train()
         total_loss = 0.0
+        correct = 0
+        total = 0
         
         for inputs, labels, domains in loader:
             inputs, labels, domains = inputs.to(self.device), labels.to(self.device), domains.to(self.device)
@@ -168,8 +170,12 @@ class TrainingFramework:
             optimizer.step()
         
             total_loss += loss.item()
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
     
-        return total_loss / len(loader)
+        accuracy = correct / total
+        return total_loss / len(loader), accuracy
 
 
     def validate(self, model: nn.Module, loader: DataLoader, 
@@ -204,6 +210,7 @@ class TrainingFramework:
             'all_val_acc': [],
             'all_train_loss': [],
             'all_val_loss': [],
+            'all_train_acc': [],
             'per_domain': {}
         }
 
@@ -254,24 +261,29 @@ class TrainingFramework:
 
             best_val_acc = 0.0
             best_epoch_stats = None
-            epoch_train_losses, epoch_val_losses, epoch_val_accs, epoch_test_accs = [], [], [], []
+            epoch_train_losses, epoch_train_accs = [], []
+            epoch_val_losses, epoch_val_accs = [], []
+            epoch_test_losses, epoch_test_accs = [], []
         
             # Training Loop (unverändert)
             epoch_pbar = tqdm(range(self.config['num_epochs']), desc="Epochs", leave=False)
             for epoch in epoch_pbar:
-                train_loss = self.train_epoch(model, train_loader, optimizer, criterion)
+                train_loss, train_acc = self.train_epoch(model, train_loader, optimizer, criterion)
                 val_loss, val_acc = self.validate(model, val_loader, criterion)
                 test_loss, test_acc = self.validate(model, test_loader, criterion)
 
                 epoch_train_losses.append(train_loss)
+                epoch_train_accs.append(train_acc)
                 epoch_val_losses.append(val_loss)
                 epoch_val_accs.append(val_acc)
+                epoch_test_losses.append(test_loss)
                 epoch_test_accs.append(test_acc)
             
                 # Logging
                 self.writer.add_scalar(f'Fold_{domain_idx}/train_loss', train_loss, epoch)
                 self.writer.add_scalar(f'Fold_{domain_idx}/val_loss', val_loss, epoch)
                 self.writer.add_scalar(f'Fold_{domain_idx}/val_acc', val_acc, epoch)
+                self.writer_add_scalar(f'Fold_{domain_idx}/test_acc', test_acc, epoch)
             
                 if scheduler:
                     scheduler.step()
@@ -289,7 +301,8 @@ class TrainingFramework:
                 epoch_pbar.set_postfix({
                     'train_loss': f"{train_loss:.4f}",
                     'val_loss': f"{val_loss:.4f}",
-                    'val_acc': f"{val_acc:.2%}"
+                    'val_acc': f"{val_acc:.2%}",
+                    'test_acc': f"{test_acc:.2%}"
                 })
 
             results['per_domain'][f'domain_{domain_idx}'] = {
@@ -304,6 +317,7 @@ class TrainingFramework:
             results['all_val_acc'].append(best_val_acc)
             results['all_train_loss'].append(best_epoch_stats['train_loss'])
             results['all_val_loss'].append(best_epoch_stats['val_loss'])
+            results['all_train_acc'].append(best_epoch_stats['test_acc'])
             
             test_preds, test_labels, test_domains = self.visualizer._evaluate_and_collect(model, test_loader)
             all_true_labels.extend(test_labels)
@@ -336,7 +350,7 @@ class TrainingFramework:
                 n_samples=500,
                 block_names=['layer1', 'layer2', 'layer3', 'layer4']
             )
-            self.visualizer._plot_training_curves(epoch_train_losses, epoch_val_losses, epoch_val_accs, epoch_test_accs, domain_name)
+            self.visualizer._plot_training_curves(epoch_train_losses, epoch_val_losses, epoch_test_losses, epoch_train_accs, epoch_val_accs, epoch_test_accs, domain_name)
             self.visualizer._plot_roc_pr_curves(model, test_loader, domain_name)
             self.visualizer._plot_confusion_matrix(model, test_loader, domain_name)
             self.visualizer._visualize_full_embedded_dataset(model, loader=DataLoader(self.full_dataset, batch_size=32, shuffle=False))
@@ -359,6 +373,7 @@ class TrainingFramework:
         results['avg_val_acc'] = np.mean(results['all_val_acc'])
         results['avg_train_loss'] = np.mean(results['all_train_loss'])
         results['avg_val_loss'] = np.mean(results['all_val_loss'])
+        results['avg_test_acc'] = np.mean(results['all_train_acc'])
 
         # Gesamtergebnisse
         self.visualizer._plot_comparative_metrics(results)
@@ -442,4 +457,4 @@ if __name__ == "__main__":
     print("\n=== Training Complete ===")
     print(f"Average Validation Accuracy: {results['avg_val_acc']:.2%}")
 
-    save_training_results(config, "/mnt/data/hahlers/training")
+    #save_training_results(config, "/mnt/data/hahlers/training")
