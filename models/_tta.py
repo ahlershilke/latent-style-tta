@@ -7,6 +7,11 @@ from typing import Dict, List, Optional, Union, Tuple
 import logging
 from torchmetrics import Accuracy
 from collections import defaultdict
+from ._styleextraction import StyleStatistics
+from ._resnet import resnet50
+from data._datasets import get_dataset
+from _styleextraction import StyleStatistics
+
 
 class AggregationStrategy(Enum):
     AVERAGE = auto()
@@ -28,7 +33,8 @@ class TTAClassifier(nn.Module):
                  num_classes: Optional[int] = None,
                  aggregation_strategy: AggregationStrategy = AggregationStrategy.AVERAGE,
                  feature_aggregation: FeatureAggregationStrategy = FeatureAggregationStrategy.MEAN,
-                 verbose: bool = False):
+                 verbose: bool = False
+                 ):
         """
         Improved TTA Classifier with multiple enhancements.
         
@@ -75,10 +81,14 @@ class TTAClassifier(nn.Module):
         self.accuracy = Accuracy(task='multiclass', num_classes=num_classes).to(device)
         
         # Load statistics if provided
-        self.domain_stats = {}
-        self.layer_stats = {}
+        self.style_stats = StyleStatistics(
+            num_domains=len(model.style_stats.domain_stats),  # Anzahl Domänen
+            num_layers=len(model.style_stats.layer_stats),    # Anzahl Layer
+            mode="average"                                    # oder "selective"
+        )
+        
         if stats_path:
-            self._load_stats(stats_path)
+            self.style_stats.load_state_dict(torch.load(stats_path))
         
         # Hook for feature extraction
         self.features = {}
@@ -92,6 +102,7 @@ class TTAClassifier(nn.Module):
         if self.aggregation_strategy == AggregationStrategy.WEIGHTED_AVERAGE:
             self._init_domain_weights()
 
+
     def _load_stats(self, stats_path: str):
         """Load statistics with validation"""
         stats = torch.load(stats_path)
@@ -102,6 +113,7 @@ class TTAClassifier(nn.Module):
             self.logger.info(f"Loaded stats with {len(self.domain_stats)} domains and {len(self.layer_stats)} layers")
             for layer, domains in self.layer_stats.items():
                 self.logger.info(f"Layer {layer} has stats for domains: {list(domains.keys())}")
+
 
     def _init_domain_weights(self):
         """Initialize domain weights based on their frequency in stats"""
@@ -115,6 +127,7 @@ class TTAClassifier(nn.Module):
         
         if self.verbose:
             self.logger.info(f"Initialized domain weights: {self.domain_weights}")
+
 
     def _register_hooks(self):
         """Register hooks to capture features at specific layers"""
@@ -134,12 +147,14 @@ class TTAClassifier(nn.Module):
                 if self.verbose:
                     self.logger.warning(f"Layer {layer_name} not found in model")
 
+
     def _get_feature_dim(self) -> int:
         """Get feature dimension by forward pass"""
         test_input = torch.randn(1, 3, 224, 224).to(self.device)
         with torch.no_grad():
             features = self.feature_extractor(test_input)
         return features.shape[1]
+
 
     def _aggregate_features(self, features_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
@@ -166,10 +181,12 @@ class TTAClassifier(nn.Module):
         else:
             raise ValueError(f"Unknown feature aggregation strategy: {self.feature_aggregation}")
 
+
     def _augment_features(self, 
-                         features: torch.Tensor, 
-                         layer_name: str, 
-                         domain: str = 'target') -> torch.Tensor:
+                          features: torch.Tensor, 
+                          layer_idx: int, 
+                          target_domain: int) -> torch.Tensor:
+    #(self, features: torch.Tensor, layer_name: str, domain: str = 'target') -> torch.Tensor:
         """
         Apply feature-level augmentation using stored μ and σ with validation.
         
@@ -180,7 +197,7 @@ class TTAClassifier(nn.Module):
             
         Returns:
             Augmented features
-        """
+        ###
         if layer_name not in self.layer_stats:
             if self.verbose:
                 self.logger.warning(f"No stats found for layer {layer_name}")
@@ -209,6 +226,19 @@ class TTAClassifier(nn.Module):
             self.logger.info(f"Augmented features for layer {layer_name} towards domain {domain}")
             
         return augmented
+        """
+
+        # Hole μ/σ aus StyleStatistics
+        mu_target, sig_target = self.style_stats.get_style_stats(target_domain)
+        mu_target = mu_target[layer_idx].to(features.device)  # [C, 1, 1]
+        sig_target = sig_target[layer_idx].to(features.device)
+    
+        # Normalisierung + Augmentierung
+        mu_current = features.mean(dim=[2, 3], keepdim=True)
+        sig_current = features.std(dim=[2, 3], keepdim=True)
+    
+        return (features - mu_current) / (sig_current + 1e-5) * sig_target + mu_target
+
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Standard forward pass"""
@@ -216,6 +246,7 @@ class TTAClassifier(nn.Module):
         if self.classifier:
             return self.classifier(features)
         return features
+
 
     def _aggregate_predictions(self, 
                              all_probs: List[torch.Tensor],
@@ -246,6 +277,7 @@ class TTAClassifier(nn.Module):
             return torch.sum(torch.stack(weighted), dim=0) / sum(weight for _ in all_probs)
         else:
             raise ValueError(f"Unknown aggregation strategy: {self.aggregation_strategy}")
+
 
     def predict(self, 
                dataloader: torch.utils.data.DataLoader, 
@@ -351,3 +383,42 @@ class TTAClassifier(nn.Module):
         if return_uncertainty:
             return None, all_probs, uncertainties
         return None, all_probs
+    
+
+def main():
+    # 1. Modell und Daten laden
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = resnet50(pretrained=False, num_classes=7).to(device)
+    
+    # 2. Statistik-Datei laden (simuliert)
+    stats_path = "style_stats.pth"
+    style_stats = StyleStatistics(num_domains=4, num_layers=4)
+    torch.save(style_stats.state_dict(), stats_path)  # Demo: Erstelle leere Stats
+
+    # 3. TTA-Classifier initialisieren
+    tta = TTAClassifier(
+        model=model,
+        stats_path=stats_path,
+        device=device,
+        num_classes=7,
+        verbose=True
+    )
+
+    # 4. Testdaten laden (Beispiel mit PACS)
+    _, test_loader = get_dataset(
+        name="PACS",
+        root_dir="./data",
+        test_domain=1  # z.B. 1="cartoon" als Testdomäne
+    )
+
+    # 5. Vorhersage mit Style-Transfer zu Domain 2 ("sketch")
+    accuracy, probs = tta.predict(
+        test_loader,
+        target_domain=2,  # Ziel-Style: "sketch"
+        num_augments=1
+    )
+    
+    print(f"Accuracy mit Sketch-Style-Augmentierung: {accuracy:.2%}")
+
+if __name__ == "__main__":
+    main()

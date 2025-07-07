@@ -1,8 +1,11 @@
+import torch
 import torch.nn as nn
 from torch import Tensor
 from typing import List, Type
 from torch.utils import model_zoo
-from ._mixstyle import MixStyle
+#from ._mixstyle import MixStyle
+from ._styleextraction import StyleStatistics, StyleExtractorManager
+from typing import Tuple
 
 
 """
@@ -37,16 +40,19 @@ class ResNet(nn.Module):
             num_domains: int,
             fc_dims=None,
             dropout_p=None,
-            use_mixstyle=False,
-            mixstyle_layers: list = [],
-            mixstyle_p: float = 0.5,
-            mixstyle_alpha: float = 0.3,
+            style_stats_config: dict = None,
+            #use_mixstyle=False,
+            #mixstyle_layers: list = [],
+            #mixstyle_p: float = 0.5,
+            #mixstyle_alpha: float = 0.3,
             verbose: bool = False,
             **kwargs
     ):
         super(ResNet, self).__init__()
         self.in_channels = 64
         self.feature_dim = 512 * block.expansion
+        self.num_domains = num_domains
+
         self.conv1 = nn.Conv2d(3, self.in_channels, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(self.in_channels)
         self.relu = nn.ReLU(inplace=True)
@@ -63,6 +69,35 @@ class ResNet(nn.Module):
         )
         self.classifier = nn.Linear(self.feature_dim, num_classes)
 
+        """
+        self.style_stats = StyleStatistics(
+            num_domains=num_domains,
+            num_layers=4,  # Für ResNet50 (layer1-4)
+            mode="single"
+        )"""
+
+        self.style_stats_enabled = False
+        self.style_stats_config = style_stats_config or {
+            'mode': 'single',
+            'use_ema': True,
+            'ema_momentum': 0.9
+        }
+
+        self.style_stats = StyleStatistics(
+            num_domains=num_domains,
+            num_layers=4,
+            mode=self.style_stats_config.get('mode', 'single'),
+            use_ema=self.style_stats_config.get('use_ema', True),
+            ema_momentum=self.style_stats_config.get('ema_momentum', 0.9),
+            device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        )
+
+        self.style_manager = StyleExtractorManager(
+            domain_names=[str(i) for i in range(num_domains)],
+            device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        )
+
+        """
         self.mixstyle = None
         if use_mixstyle:
             self.mixstyle = MixStyle(
@@ -76,6 +111,12 @@ class ResNet(nn.Module):
             if verbose:
                 print('Insert MixStyle after the following layers: {}'.format(mixstyle_layers))
         self.mixstyle_layers = mixstyle_layers
+        """
+
+    
+    def enable_style_stats(self, enable=True):
+        #Aktiviert/deaktiviert das Sammeln von Style Statistiken
+        self.style_stats_enabled = enable
 
     def _make_layer(
             self,
@@ -148,20 +189,24 @@ class ResNet(nn.Module):
         x = self.maxpool(x)
 
         x = self.layer1(x)
-        if self.mixstyle is not None and 'layer1' in self.mixstyle_layers:
-            x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=0)
+        self._update_style_stats(x, domain_idx, layer_idx=0)
+        #if self.mixstyle is not None and 'layer1' in self.mixstyle_layers:
+         #   x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=0)
 
         x = self.layer2(x)
-        if self.mixstyle is not None and 'layer2' in self.mixstyle_layers:
-            x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=1)
+        self._update_style_stats(x, domain_idx, layer_idx=1)
+        #if self.mixstyle is not None and 'layer2' in self.mixstyle_layers:
+         #   x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=1)
 
         x = self.layer3(x)
-        if self.mixstyle is not None and 'layer3' in self.mixstyle_layers:
-            x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=2)
+        self._update_style_stats(x, domain_idx, layer_idx=2)
+        #if self.mixstyle is not None and 'layer3' in self.mixstyle_layers:
+         #   x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=2)
 
         x = self.layer4(x)
-        if self.mixstyle is not None and 'layer4' in self.mixstyle_layers:
-            x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=3)
+        self._update_style_stats(x, domain_idx, layer_idx=3) # noch nötig für Style Transfer?
+        #if self.mixstyle is not None and 'layer4' in self.mixstyle_layers:
+         #   x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=3)
 
         #x = self.avgpool(x)
         #x = torch.flatten(x, 1)
@@ -175,6 +220,10 @@ class ResNet(nn.Module):
     ) -> Tensor:
         out = self._feature_extractor(x, domain_idx=domain_idx)
 
+        if self.training and domain_idx is not None:
+            for layer_idx in range(4):  # Für alle relevanten Layers
+                self._update_style_stats(out, domain_idx, layer_idx)
+
         out = self.avgpool(out)
         v = out.view(out.size(0), -1)
         if self.fc is not None:
@@ -182,13 +231,89 @@ class ResNet(nn.Module):
         y = self.classifier(v)
         return y
     
-    def get_style_stats(self):
-        """Returns the style statistics of the MixStyle module."""
-        if self.mixstyle is not None:
-            return self.mixstyle.style_stats
-        else:
-            raise AttributeError("MixStyle is not enabled in this model.")
+    #TODO ??
+    def get_style_stats(self, domain_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        #Returns the style statistics of the model.
+        return self.style_stats.get_style_stats(domain_idx)
+    
+    def _update_style_stats(self, x: torch.Tensor, domain_idx: int, layer_idx: int):
+        #Collects μ and σ for layers and domains.
+        if not self.style_stats_enabled or domain_idx is None:
+            return
 
+        #print(f"Input x shape: {x.shape}")
+
+        mu = x.mean(dim=[2, 3], keepdim=True) # True)  # [B, C, 1, 1]
+        sig = x.std(dim=[2, 3], keepdim=True) #True)
+        
+        #print(f"Pre-update shapes - mu: {mu.shape}, sig: {sig.shape}")
+        
+        if isinstance(domain_idx, int):
+            domain_idx = torch.tensor([domain_idx], device=x.device)
+        
+        self.style_stats._update(domain_idx, layer_idx, mu, sig)
+
+    
+    #TODO ersatz für _update_style_stats() ?
+    def _update_stats(self, features, domain_idx, layer_idx):
+        mu = features.mean(dim=[2, 3], keepdim=True).detach()  # [B, C, 1, 1]
+        sigma = features.std(dim=[2, 3], keepdim=True).detach()
+        self.style_stats._update(domain_idx, layer_idx, mu, sigma)
+
+
+    def save_style_stats(self, path: str, mode: str = 'all'):
+        """
+        Speichert Style-Statistiken
+        :param path: Pfad zum Speichern
+        :param mode: 'all' für alle Modi oder spezifischer Modus
+        """
+        if mode == 'all':
+            self.style_manager.save_style_stats("all_domains", path)
+        else:
+            torch.save({
+                'stats': self.style_stats.state_dict(),
+                'config': self.style_stats_config
+            }, path)
+
+    @classmethod
+    def load_with_style_stats(cls, path: str, **model_args):
+        """
+        Lädt Modell mit gespeicherten Style-Statistiken
+        :param path: Pfad zur gespeicherten Datei
+        :param model_args: Argumente für Modellinitialisierung
+        """
+        checkpoint = torch.load(path, map_location='cuda' if torch.cuda.is_available() else 'cpu')
+        model = cls(**model_args)
+        
+        """
+        model_state_dict = model.state_dict()
+
+        pretrained_dict = {k: v for k, v in checkpoint['model_state_dict'].items() 
+                      if k in model_state_dict}
+
+        model_state_dict.update(pretrained_dict)
+        model.load_state_dict(model_state_dict)
+        
+        if 'style_stats' in checkpoint:
+            model.style_stats.load_state_dict(checkpoint['style_stats'], strict=False)
+            model.style_stats_config = checkpoint.get('style_stats_config', {})
+        """
+
+        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+    
+        if not hasattr(model.style_stats, 'layer_counts'):
+            model.style_stats.register_buffer('layer_counts',
+                                              torch.zeros(model.style_stats.num_domains, model.style_stats.num_layers, dtype=torch.long))
+        if not hasattr(model.style_stats, 'count'):
+            model.style_stats.register_buffer('count',
+                                              torch.zeros(model.style_stats.num_domains, dtype=torch.long))
+    
+        # Load style stats if available
+        if 'style_stats' in checkpoint:
+            model.style_stats.load_state_dict(checkpoint['style_stats'], strict=False)
+        
+        return model    
+    
 
 class BasicBlock (nn.Module):
     expansion = 1

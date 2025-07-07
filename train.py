@@ -18,6 +18,7 @@ from models import resnet50, resnet18
 from data._datasets import PACS, DOMAIN_NAMES, DomainDataset, DomainSubset
 from utils._visualize import Visualizer
 from utils._utils import save_training_results
+from models._styleextraction import StyleExtractorManager
 
 
 class TrainingFramework:
@@ -51,7 +52,7 @@ class TrainingFramework:
         self.domain_names = domain_names
         self.lodo_splits = self.full_dataset.generate_lodo_splits()
 
-        self.collate_fn = full_dataset.collate_fn if hasattr(full_dataset, 'collate_fn') else default_collate
+        self.collate_fn = self.full_dataset.collate_fn if hasattr(self.full_dataset, 'collate_fn') else default_collate
         
         self.visualizer = Visualizer(
             config=self.config,
@@ -59,6 +60,12 @@ class TrainingFramework:
             domain_names=self.domain_names,
             vis_dir=self.config['vis_dir']
         )
+        
+        self.style_manager = StyleExtractorManager(
+            domain_names=self.domain_names,
+            device=self.device
+        )
+
 
     def set_seeds(seed: int = 42) -> None:
         """Sets all random seeds for reproducibility.
@@ -98,6 +105,7 @@ class TrainingFramework:
             dropout_p=hparams['dropout'],
             pretrained=True
         )
+        model.enable_style_stats(True)
         return model.to(self.device)
 
 
@@ -150,12 +158,65 @@ class TrainingFramework:
             )
 
         return optimizer, scheduler
+    
+
+    def extract_style_stats_from_saved_models(self, hparam_path: str) -> None:
+        """Extracts style stats from all saved model checkpoints
+        hparams = self._load_hparams(hparam_path)
+        
+        for domain_idx, domain_name in enumerate(self.domain_names):
+            model_path = os.path.join(self.config['save_dir'], f"best_fold_{domain_name}.pt")
+            
+            if not os.path.exists(model_path):
+                print(f"Warning: Model checkpoint not found for {domain_name}")
+                continue
+            
+            print(f"\nExtracting style stats from {domain_name} model...")
+            
+            self.style_manager.extract_from_saved_model(
+                model_path=model_path,
+                domain_name=domain_name,
+                model_class=resnet50,
+                model_args={
+                    'num_classes': len(self.class_names),
+                    'num_domains': len(self.domain_names),
+                    'batch_size': hparams['batch_size'],
+                    'use_mixstyle': False,
+                    'dropout_p': hparams['dropout'],
+                    'pretrained': True
+                },
+                results_dir=os.path.join(self.config['save_dir'], "style_stats")
+            )
+        """
+        """Extracts style stats from all trained models"""
+        hparams = self._load_hparams(hparam_path)
+
+        for domain_idx, domain_name in enumerate(self.domain_names):
+            model_path = os.path.join(self.config['save_dir'], f"best_fold_{domain_name}.pt")
+
+            if not os.path.exists(model_path):
+                continue
+            
+            # Load model with style stats
+            checkpoint = torch.load(model_path, map_location=self.device, weights_only=True)
+            model = self._init_model(hparams)
+            model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+        
+            if 'style_stats' in checkpoint:
+                model.style_stats.load_state_dict(checkpoint['style_stats'], strict=False)
+        
+            # Save stats
+            self.style_manager.save_style_stats(
+                domain_name=domain_name,
+                results_dir=os.path.join(self.config['save_dir'], "style_stats")
+            )
 
 
     def train_epoch(self, model: nn.Module, loader: DataLoader, 
                    optimizer: torch.optim.Optimizer, criterion: nn.Module) -> float:
         """One epoch of training"""
         model.train()
+        model.enable_style_stats(True)
         total_loss = 0.0
         correct = 0
         total = 0
@@ -164,7 +225,7 @@ class TrainingFramework:
             inputs, labels, domains = inputs.to(self.device), labels.to(self.device), domains.to(self.device)
         
             optimizer.zero_grad()
-            outputs = model(inputs)
+            outputs = model(inputs, domain_idx=domains)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
@@ -204,7 +265,7 @@ class TrainingFramework:
     def run(self, hparam_path: str):
         """Train the model using lodo cross-validation"""
         #self.visualizer._visualize_raw_dataset(loader=DataLoader(self.full_dataset, batch_size=32, shuffle=False), n_samples=500)
-        self.visualizer._visualize_complete_raw_dataset(loader=DataLoader(self.full_dataset, batch_size=32, shuffle=False))
+        #self.visualizer._visualize_complete_raw_dataset(loader=DataLoader(self.full_dataset, batch_size=32, shuffle=False))
         hparams = self._load_hparams(hparam_path)
         results = {
             'all_val_acc': [],
@@ -283,7 +344,7 @@ class TrainingFramework:
                 self.writer.add_scalar(f'Fold_{domain_idx}/train_loss', train_loss, epoch)
                 self.writer.add_scalar(f'Fold_{domain_idx}/val_loss', val_loss, epoch)
                 self.writer.add_scalar(f'Fold_{domain_idx}/val_acc', val_acc, epoch)
-                self.writer_add_scalar(f'Fold_{domain_idx}/test_acc', test_acc, epoch)
+                self.writer.add_scalar(f'Fold_{domain_idx}/test_acc', test_acc, epoch)
             
                 if scheduler:
                     scheduler.step()
@@ -295,6 +356,7 @@ class TrainingFramework:
                         'train_loss': train_loss,
                         'val_loss': val_loss,
                         'val_acc': val_acc,
+                        'test_acc': test_acc,
                         'epoch': epoch
                     }
             
@@ -336,39 +398,39 @@ class TrainingFramework:
             """
 
             dl = DataLoader(
-                dataset=full_dataset,
+                dataset=self.full_dataset,
                 batch_size=64,
                 shuffle=False,
                 pin_memory=True
                 )
 
             # Visualisierungen
-            self.visualizer.visualize_resnet_tsne_blocks(
-                model=model,
-                loader=dl,
-                device=self.device,
-                n_samples=500,
-                block_names=['layer1', 'layer2', 'layer3', 'layer4']
-            )
-            self.visualizer._plot_training_curves(epoch_train_losses, epoch_val_losses, epoch_test_losses, epoch_train_accs, epoch_val_accs, epoch_test_accs, domain_name)
-            self.visualizer._plot_roc_pr_curves(model, test_loader, domain_name)
-            self.visualizer._plot_confusion_matrix(model, test_loader, domain_name)
-            self.visualizer._visualize_full_embedded_dataset(model, loader=DataLoader(self.full_dataset, batch_size=32, shuffle=False))
-            self.visualizer._visualize_predictions(model, test_loader, domain_name, num_examples=5)
-            self.visualizer._visualize_gradcam_predictions(
-                model=model,
-                loader=test_loader,
-                domain_name=domain_name,
-                num_examples=5,
-                target_layer=None  # will auto-detect last conv layer
-            )
-            self.visualizer._visualize_umap_embeddings(
-                model=model,
-                loader=test_loader,  # oder DataLoader(self.full_dataset)
-                domain_name=domain_name,
-                n_samples=500
-            )
-            self.visualizer._visualize_raw_umap(loader=test_loader, domain_name=domain_name)
+            #self.visualizer.visualize_resnet_tsne_blocks(
+                #model=model,
+                #loader=dl,
+                #device=self.device,
+                #n_samples=500,
+                #block_names=['layer1', 'layer2', 'layer3', 'layer4']
+            #)
+            #self.visualizer._plot_training_curves(epoch_train_losses, epoch_val_losses, epoch_test_losses, epoch_train_accs, epoch_val_accs, epoch_test_accs, domain_name)
+            #self.visualizer._plot_roc_pr_curves(model, test_loader, domain_name)
+            #self.visualizer._plot_confusion_matrix(model, test_loader, domain_name)
+            #self.visualizer._visualize_full_embedded_dataset(model, loader=DataLoader(self.full_dataset, batch_size=32, shuffle=False))
+            #self.visualizer._visualize_predictions(model, test_loader, domain_name, num_examples=5)
+            #self.visualizer._visualize_gradcam_predictions(
+                #model=model,
+                #loader=test_loader,
+                #domain_name=domain_name,
+                #num_examples=5,
+                #target_layer=None  # will auto-detect last conv layer
+            #)
+            #self.visualizer._visualize_umap_embeddings(
+                #model=model,
+                #loader=test_loader,  # oder DataLoader(self.full_dataset)
+                #domain_name=domain_name,
+                #n_samples=500
+            #)
+            #self.visualizer._visualize_raw_umap(loader=test_loader, domain_name=domain_name)
     
         results['avg_val_acc'] = np.mean(results['all_val_acc'])
         results['avg_train_loss'] = np.mean(results['all_train_loss'])
@@ -376,22 +438,32 @@ class TrainingFramework:
         results['avg_test_acc'] = np.mean(results['all_train_acc'])
 
         # Gesamtergebnisse
-        self.visualizer._plot_comparative_metrics(results)
-        self.visualizer._visualize_embedded_dataset(
-            model=model,
-            loader=DataLoader(self.full_dataset, batch_size=32, shuffle=False),
-            n_samples=500
-        )
-        self._save_results(results)
+        #self.visualizer._plot_comparative_metrics(results)
+        #self.visualizer._visualize_embedded_dataset(
+            #model=model,
+            #loader=DataLoader(self.full_dataset, batch_size=32, shuffle=False),
+            #n_samples=500
+        #)
+        #self._save_results(results)
         self.writer.close()
+
+        self.extract_style_stats_from_saved_models(hparam_path)
 
         return results
 
     def _save_model(self, model: nn.Module, filename: str):
         """Save the model state dictionary"""
         save_path = os.path.join(self.config['save_dir'], filename)
+        
+        model_state_dict = {
+            k: v for k, v in model.state_dict().items() 
+            if not k.startswith('style_stats.')
+        }
+        
         torch.save({
-            'model_state_dict': model.state_dict(),
+            'model_state_dict': model_state_dict,
+            'style_stats': model.style_stats.state_dict(),
+            'style_stats_config': model.style_stats_config,
             'fold': self.current_domain,
             'config': self.config,
             'git_hash': subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip(),
@@ -457,4 +529,4 @@ if __name__ == "__main__":
     print("\n=== Training Complete ===")
     print(f"Average Validation Accuracy: {results['avg_val_acc']:.2%}")
 
-    #save_training_results(config, "/mnt/data/hahlers/training")
+    save_training_results(config, "/mnt/data/hahlers/training")
