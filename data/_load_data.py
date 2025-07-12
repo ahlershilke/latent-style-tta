@@ -23,11 +23,12 @@ def get_train_val_datasets():
 
 def get_train_val_datasets():
     test_domain_name = 'photo'
-    domains = ['art_painting', 'cartoon', 'photo', 'sketch']
+    #domains = ['art_painting', 'cartoon', 'photo', 'sketch']
+    domains = ['bird', 'dog', 'chair', 'car', 'person']
     test_domain_index = domains.index(test_domain_name)
 
     dataset = get_dataset(
-        name='PACS',
+        name='VLCS',
         root_dir='/mnt/data/hahlers/datasets',
         test_domain=test_domain_index,
         augment=None
@@ -49,7 +50,7 @@ def get_train_val_datasets():
 def get_lodo_splits():
     """Returns a list of datasets for Leave-One-Domain-Out (LoDO) cross-validation."""
     dataset = get_dataset(
-        name='PACS',
+        name='VLCS',
         root_dir='/mnt/data/hahlers/datasets',
         test_domain=None,
         augment=None

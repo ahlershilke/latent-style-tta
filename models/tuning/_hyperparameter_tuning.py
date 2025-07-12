@@ -87,7 +87,7 @@ class HP_Tuner:
 
     def create_model(self, params_or_trial, verbose=False):
         #model_type = trial.suggest_categorical("model_type", ["resnet18", "resnet34", "resnet50", "resnet101"])
-        model_type = "resnet18"
+        model_type = "resnet50"
     
         actual_layers = []
         use_mixstyle = False
@@ -223,7 +223,7 @@ class HP_Tuner:
                 inputs, labels, domain_idx = inputs.to(device), labels.to(device), domain_idx.to(device)
             
                 optimizer.zero_grad()
-                outputs = model(inputs, domain_idx) if use_mixstyle else model(inputs)
+                outputs = model(inputs, domain_idx) #if use_mixstyle else model(inputs)
                 loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
@@ -405,7 +405,7 @@ class HP_Tuner:
         study.set_user_attr("fold", self.fold_info["fold"])
         study.set_user_attr("test_domain", self.fold_info["test_domain"])
 
-        with tqdm(total=self.n_trials, desc="Hyperparameter-Tuning", unit="trial") as pbar:
+        with tqdm(total=self.n_trials, desc="Hyperparameter Tuning", unit="trial") as pbar:
             def update_pbar(study, trial):
                 pbar.update(1)
                 pbar.set_postfix({
@@ -456,9 +456,9 @@ class HP_Tuner:
         criterion = nn.CrossEntropyLoss().to(self.device)
 
         with torch.no_grad():
-            for inputs, labels, _ in test_loader:
+            for inputs, labels, domain_idx in test_loader:
                 inputs, labels = inputs.to(self.device), labels.to(self.device)
-                outputs = model(inputs)
+                outputs = model(inputs, domain_idx=domain_idx)
                 total_loss += criterion(outputs, labels).item()
                 _, predicted = torch.max(outputs, 1)
                 total += labels.size(0)

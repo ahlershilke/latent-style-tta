@@ -4,6 +4,9 @@ from zipfile import ZipFile
 import gdown
 import os
 import shutil
+import kagglehub
+import PIL
+from PIL import Image
 
 
 """
@@ -23,11 +26,25 @@ def download_pacs(data_dir):
     full_path = ask_for_download_location(os.path.join(data_dir, "PACS"))
     
     zip_path = os.path.join(os.path.dirname(full_path), "PACS.zip")
-    download_and_extract("https://drive.google.com/uc?id=1JFr8f805nMUelQWWmfnJR3y4_SYoN5Pd",
+    download_and_extract("https://drive.google.com/uc?id=1JFr8f805nMUelQWWmfnJR3y4_SYoN5Pd", # link is unfortunately obsolete
                          zip_path)
 
     kfold_path = os.path.join(os.path.dirname(full_path), "kfold")
     join_paths(kfold_path, full_path)
+
+
+def download_vlcs(data_dir):
+    if data_dir is None:
+        data_dir = os.getcwd()
+
+    full_path = ask_for_download_location(os.path.join(data_dir, "VLCS"))
+
+    kagglehub_path = kagglehub.dataset_download("iamjanvijay/vlcsdataset")
+    join_paths(kagglehub_path, full_path)
+
+    kfold_path = os.path.join(os.path.dirname(full_path), "kfold")
+    if os.path.exists(kfold_path):
+        join_paths(kfold_path, full_path)
 
 
 def stage_path(data_dir, name):
@@ -111,7 +128,7 @@ def download_and_extract(url, dst, remove=True):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--datadir', default='./datasets')
-    parser.add_argument('--download_camelyon', action='store_true', default=False)
+    parser.add_argument('--download_vlcs', action='store_true', default=False)
     parser.add_argument('--download_pacs', action='store_true', default=False)
     parser.add_argument('--all', action='store_true', default=False)
     args = parser.parse_args()
@@ -121,5 +138,8 @@ if __name__ == '__main__':
     if args.all:
         # insert all datasets here
         args.download_pacs = True
+        args.download_vlcs = True
     if args.download_pacs:
         download_pacs(args.datadir)
+    if args.download_vlcs:
+        download_vlcs(args.datadir)

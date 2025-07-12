@@ -52,7 +52,8 @@ class TrainingFramework:
         self.domain_names = domain_names
         self.lodo_splits = self.full_dataset.generate_lodo_splits()
 
-        self.collate_fn = self.full_dataset.collate_fn if hasattr(self.full_dataset, 'collate_fn') else default_collate
+        #self.collate_fn = self.full_dataset.collate_fn if hasattr(self.full_dataset, 'collate_fn') else default_collate
+        self.collate_fn = self._custom_collate_fn
         
         self.visualizer = Visualizer(
             config=self.config,
@@ -80,6 +81,14 @@ class TrainingFramework:
             torch.cuda.manual_seed_all(seed)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+
+    
+    def _custom_collate_fn(self, batch):
+        """Custom collate function that properly handles domain indices"""
+        imgs = torch.stack([item[0] for item in batch])
+        labels = torch.tensor([item[1] for item in batch])
+        domains = torch.tensor([item[2] for item in batch], dtype=torch.long)
+        return imgs, labels, domains
         
     
     def _load_hparams(self, config_path: str) -> Dict:
@@ -105,7 +114,7 @@ class TrainingFramework:
             dropout_p=hparams['dropout'],
             pretrained=True
         )
-        model.enable_style_stats(True)
+        #model.enable_style_stats(True)
         return model.to(self.device)
 
 
@@ -193,17 +202,33 @@ class TrainingFramework:
 
         for domain_idx, domain_name in enumerate(self.domain_names):
             model_path = os.path.join(self.config['save_dir'], f"best_fold_{domain_name}.pt")
+            print("sind jetzt hier, domain_idx: ", domain_idx)
 
             if not os.path.exists(model_path):
                 continue
             
             # Load model with style stats
-            checkpoint = torch.load(model_path, map_location=self.device, weights_only=True)
-            model = self._init_model(hparams)
-            model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+            #checkpoint = torch.load(model_path, map_location=self.device, weights_only=True)
+            #model = self._init_model(hparams)
+            #model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+
+            self.style_manager.extract_from_saved_model(
+                model_path=model_path,
+                domain_name=domain_name,
+                model_class=resnet50,
+                model_args={
+                    'num_classes': len(self.class_names),
+                    'num_domains': len(self.domain_names),
+                    'batch_size': hparams['batch_size'],
+                    'use_mixstyle': False,
+                    'dropout_p': hparams['dropout'],
+                    'pretrained': True
+                },
+                results_dir=os.path.join(self.config['save_dir'], "style_stats")
+            )
         
-            if 'style_stats' in checkpoint:
-                model.style_stats.load_state_dict(checkpoint['style_stats'], strict=False)
+            #if 'style_stats' in checkpoint:
+                #model.style_stats.load_state_dict(checkpoint['style_stats'], strict=False)
         
             # Save stats
             self.style_manager.save_style_stats(
@@ -216,16 +241,19 @@ class TrainingFramework:
                    optimizer: torch.optim.Optimizer, criterion: nn.Module) -> float:
         """One epoch of training"""
         model.train()
-        model.enable_style_stats(True)
+        #model.enable_style_stats(True)
         total_loss = 0.0
         correct = 0
         total = 0
         
-        for inputs, labels, domains in loader:
-            inputs, labels, domains = inputs.to(self.device), labels.to(self.device), domains.to(self.device)
+        for inputs, labels, domain_idx in loader:
+            inputs, labels, domain_idx = inputs.to(self.device), labels.to(self.device), domain_idx.to(self.device)
+
+            if domain_idx.dim() == 0:
+                domain_idx = domain_idx.unsqueeze(0)
         
             optimizer.zero_grad()
-            outputs = model(inputs, domain_idx=domains)
+            outputs = model(inputs, domain_idx=domain_idx)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
@@ -248,10 +276,10 @@ class TrainingFramework:
         total = 0
 
         with torch.no_grad():
-            for inputs, labels, domains in loader:
-                inputs, labels, domains = inputs.to(self.device), labels.to(self.device), domains.to(self.device)
+            for inputs, labels, domain_idx in loader:
+                inputs, labels, domain_idx = inputs.to(self.device), labels.to(self.device), domain_idx.to(self.device)
 
-                outputs = model(inputs)
+                outputs = model(inputs, domain_idx=domain_idx)
                 val_loss += criterion(outputs, labels).item()
             
                 _, predicted = torch.max(outputs.data, 1)
@@ -465,7 +493,11 @@ class TrainingFramework:
             'style_stats': model.style_stats.state_dict(),
             'style_stats_config': model.style_stats_config,
             'fold': self.current_domain,
-            'config': self.config,
+            'config': {
+                'config': self.config,
+                'target_layer': model.style_stats.target_layer,
+                'num_domains': model.style_stats.num_domains
+                },
             'git_hash': subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip(),
             'timestamp': datetime.now().isoformat()
         }, save_path)
@@ -492,7 +524,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_root', type=str, default="/mnt/data/hahlers/datasets")
-    parser.add_argument('--hparam_file', type=str, default="configs/global_config.yaml")
+    parser.add_argument('--hparam_file', type=str, default="configs/pacs/global_config.yaml")
     parser.add_argument('--num_epochs', type=int, default=50, help='Number of training epochs')
     parser.add_argument('--domains', type=int, default=4, help='Number of domains')
     args = parser.parse_args()

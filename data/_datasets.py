@@ -11,6 +11,8 @@ from collections import defaultdict
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, ConcatDataset, Subset
 from torchvision.datasets import ImageFolder
+import PIL
+from PIL import Image
 
 """
 This code was taken and adapted from:
@@ -20,8 +22,8 @@ This code was taken and adapted from:
 """To add a new dataset, just create a class that inherits from `DomainDataset`."""
 
 DOMAIN_NAMES = {
-    'PACS': ["art_painting", "cartoon", "photo", "sketch"] #,
-    #'camelyon17': ["center_0", "center_1", "center_2", "center_3", "center_4"],
+    'PACS': ["art_painting", "cartoon", "photo", "sketch"],
+    'VLCS': ["bird", "car", "chair", "dog", "person"]
 }
 
 class DomainSubset(Subset):
@@ -93,6 +95,20 @@ class DomainDataset(MultiDomainDataset):
 
             path = os.path.join(root, domain)
             domain_dataset = ImageFolder(path, transform=domain_transform)
+
+            valid_samples = []
+            for sample in domain_dataset.samples:
+                try:
+                    with Image.open(sample[0]) as img:
+                        img.load()
+                        img = img.convert("RGB")
+                    valid_samples.append(sample)
+                except (OSError, RuntimeError, PIL.UnidentifiedImageError):
+                    print(f"Removing corrupted image: {sample[0]}")
+            
+            domain_dataset.samples = valid_samples
+            domain_dataset.targets = [s[1] for s in valid_samples]
+
 
             if self.subset is not None:
                 # ensures that target distribution remains true to original data
@@ -287,15 +303,16 @@ class DomainDataset(MultiDomainDataset):
             
                 # Wende neues domain_idx-Mapping an
                 new_domain_idx = domain_idx_mapping[orig_domain_idx]
-                train_subsets.append(DomainSubset(domain_data, train_idx, new_domain_idx))
-                val_subsets.append(DomainSubset(domain_data, val_idx, new_domain_idx))
+                train_subsets.append(DomainSubset(domain_data, train_idx, new_domain_idx, orig_domain_idx))
+                val_subsets.append(DomainSubset(domain_data, val_idx, new_domain_idx, orig_domain_idx))
 
             # 4. Test-Domain mit konsistentem Index
             test_data = []  # TODO hier war was, aber was?
             test_data.append(DomainSubset(
                 self.data[test_domain_idx],
                 indices=list(range(len(self.data[test_domain_idx]))),
-                domain_idx=test_domain_new_idx
+                domain_idx=test_domain_new_idx,
+                original_domain_idx=test_domain_idx
             ))
 
             splits.append((
@@ -322,8 +339,8 @@ def get_dataset(
     """
     if name == 'PACS':
         return PACS(root_dir, test_domain=test_domain, **kwargs)
-    #if name == 'camelyon17':
-     #   return Camelyon17(root_dir, test_domain=test_domain, **kwargs)
+    if name == 'VLCS':
+        return VLCS(root_dir, test_domain=test_domain, **kwargs)
     else:
         raise ValueError(f"Dataset {name} not found. Please check the name or add it to the code.")
 
@@ -358,3 +375,48 @@ class PACS(DomainDataset):
     
     def __len__(self):
         return sum(len(d) for d in self.data)
+
+
+class VLCS(DomainDataset):
+    domains = DOMAIN_NAMES['VLCS']
+    input_shape = (3, 224, 224)
+
+    def __init__(self, root, test_domain, **kwargs):
+        self.dir = os.path.join(root, "VLCS/")
+        self.aug = kwargs.get('augment', None)
+        super().__init__(self.dir, test_domain, augment=None)
+
+        for domain_idx, domain_data in enumerate(self.data):
+            domain_data.domain_idx = domain_idx
+    
+    def __getitem__(self, index):
+        if isinstance(index, tuple):  # Nur für DomainSubset nötig
+            domain_idx, sample_idx = index[0], index[1]
+            img, label = self.data[domain_idx][sample_idx]
+            return img, label, domain_idx
+        else:  # Standardfall
+            for domain_idx, domain_data in enumerate(self.data):
+                if index < len(domain_data):
+                    img, label = domain_data[index]
+                    return img, label, domain_idx
+                index -= len(domain_data)
+            raise IndexError("Index out of range")
+    
+    def __len__(self):
+        return sum(len(d) for d in self.data)
+
+
+    def check_corruption():
+        root = "/mnt/data/hahlers/datasets/VLCS"
+        corrupted = []
+
+        for domain in os.listdir(root):
+            dpath = os.path.join(root, domain)
+            for fn in os.listdir(dpath):
+                try:
+                    img = Image.open(os.path.join(dpath, fn))
+                    img.verify()
+                except Exception:
+                    corrupted.append(os.path.join(dpath, fn))
+
+        print("Beschädigte Dateien:", corrupted)

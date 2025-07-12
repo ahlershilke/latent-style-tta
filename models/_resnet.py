@@ -69,14 +69,7 @@ class ResNet(nn.Module):
         )
         self.classifier = nn.Linear(self.feature_dim, num_classes)
 
-        """
-        self.style_stats = StyleStatistics(
-            num_domains=num_domains,
-            num_layers=4,  # Für ResNet50 (layer1-4)
-            mode="single"
-        )"""
-
-        self.style_stats_enabled = False
+        self.style_stats_enabled = True
         self.style_stats_config = style_stats_config or {
             'mode': 'single',
             'use_ema': True,
@@ -114,9 +107,9 @@ class ResNet(nn.Module):
         """
 
     
-    def enable_style_stats(self, enable=True):
+    #def enable_style_stats(self, enable=True):
         #Aktiviert/deaktiviert das Sammeln von Style Statistiken
-        self.style_stats_enabled = enable
+     #   self.style_stats_enabled = enable
 
     def _make_layer(
             self,
@@ -218,7 +211,7 @@ class ResNet(nn.Module):
             x: Tensor,
             domain_idx: int = None
     ) -> Tensor:
-        out = self._feature_extractor(x, domain_idx=domain_idx)
+        out = self._feature_extractor(x, domain_idx)
 
         if self.training and domain_idx is not None:
             for layer_idx in range(4):  # Für alle relevanten Layers
@@ -241,12 +234,15 @@ class ResNet(nn.Module):
         if not self.style_stats_enabled or domain_idx is None:
             return
 
-        #print(f"Input x shape: {x.shape}")
-
+        if x.dim() != 4:
+            return
+        
         mu = x.mean(dim=[2, 3], keepdim=True) # True)  # [B, C, 1, 1]
         sig = x.std(dim=[2, 3], keepdim=True) #True)
         
-        #print(f"Pre-update shapes - mu: {mu.shape}, sig: {sig.shape}")
+        if str(layer_idx) not in self.style_stats.mu_dict: #or
+            #self.style_stats.mu_dict[str(layer_idx)].shape[1] != mu.shape[1]):  # Channel-Dimension prüfen
+            self.style_stats._init_layer(layer_idx, mu.shape[1])
         
         if isinstance(domain_idx, int):
             domain_idx = torch.tensor([domain_idx], device=x.device)
@@ -271,8 +267,13 @@ class ResNet(nn.Module):
             self.style_manager.save_style_stats("all_domains", path)
         else:
             torch.save({
-                'stats': self.style_stats.state_dict(),
-                'config': self.style_stats_config
+                'model_state': self.state_dict(),
+                'style_stats': self.style_stats.state_dict(),
+                'config': {
+                    'style_stats_config': self.style_stats_config,
+                    'target_layer': self.style_stats.target_layer,
+                    'num_domains': self.style_stats.num_domains
+                    }
             }, path)
 
     @classmethod
