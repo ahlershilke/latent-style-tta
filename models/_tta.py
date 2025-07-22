@@ -16,6 +16,7 @@ from ._styleextraction import StyleStatistics
 from ._resnet import resnet50
 from data._datasets import get_dataset
 from _styleextraction import StyleStatistics
+from utils._visualize import Visualizer
 
 
 class AggregationStrategy(Enum):
@@ -54,7 +55,9 @@ class TTAClassifier(nn.Module):
                  aggregation_strategy: AggregationStrategy = AggregationStrategy.AVERAGE,
                  feature_aggregation: FeatureAggregationStrategy = FeatureAggregationStrategy.MEAN,
                  verbose: bool = False,
-                 seed: Optional[int] = None
+                 seed: Optional[int] = None,
+                 class_names: Optional[List[str]] = None,
+                 domain_names: Optional[List[str]] = None
                  ):
         """
         Improved TTA Classifier with multiple enhancements.
@@ -111,6 +114,14 @@ class TTAClassifier(nn.Module):
             num_domains=len(model.style_stats.domain_stats),  # Anzahl Domänen
             num_layers=len(model.style_stats.layer_stats)#,    # Anzahl Layer
             #mode="average"                                    # oder "selective"
+        )
+
+        self.class_names = class_names if class_names else [f"Class_{i}" for i in range(num_classes)]
+        self.domain_names = domain_names if domain_names else ["Domain_0"]
+
+        self.visualizer = Visualizer(
+            class_names=self.class_names,
+            domain_names=self.domain_names
         )
         
         if stats_path:
@@ -454,6 +465,29 @@ class TTAExperiment:
         self.config = config
         self.seed_manager = SeedManager()
 
+        _, self.test_loader = get_dataset(
+            name=self.config['dataset_name'],
+            root_dir=self.config['data_dir'],
+            test_domain=self.config['test_domain']
+        )
+
+        self.class_names = self._get_class_names()
+        self.domain_names = self._get_domain_names()
+
+    def _get_class_names(self) -> List[str]:
+        """Extrahiere Klassennamen aus dem Dataset"""
+        try:
+            return self.test_loader.dataset.classes
+        except AttributeError:
+            return [f"Class_{i}" for i in range(self.config['num_classes'])]
+
+    def _get_domain_names(self) -> List[str]:
+        """Extrahiere Domänennamen basierend auf dem Dataset"""
+        # Hier können Sie domänenspezifische Logik implementieren
+        if hasattr(self.test_loader.dataset, 'domain_names'):
+            return self.test_loader.dataset.domain_names
+        return [f"Domain_{i}" for i in range(len(self.config['target_domains']))]
+
     def run_single_seed(self, seed):
         """Run full pipeline for one seed"""
         self.seed_manager.set_seed(seed)
@@ -466,14 +500,18 @@ class TTAExperiment:
             device=self.config['device'],
             num_classes=self.config['num_classes'],
             verbose=self.config['verbose'],
-            seed=seed
+            seed=seed,
+            class_names=self.class_names,  # Übergebe Klassennamen
+            domain_names=self.domain_names
         )
 
+        """
         _, test_loader = get_dataset(
             name=self.config['dataset_name'],
             root_dir=self.config['data_dir'],
             test_domain=self.config['test_domain']
         )
+        """
 
         results = {}
         for target_domain in self.config['target_domains']:
@@ -481,7 +519,7 @@ class TTAExperiment:
                 print(f"Seed {seed} | Target domain {target_domain}")
             
             results[target_domain] = tta.predict(
-                test_loader,
+                self.test_loader,
                 num_augments=self.config['num_augments']
             )
         
@@ -525,45 +563,6 @@ class TTAExperiment:
         with open(os.path.join(self.config['output_dir'], filename), 'w') as f:
             json.dump(results, f, indent=2)
 
-"""
-def main():
-    # 1. Modell und Daten laden
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = resnet50(pretrained=False, num_classes=7).to(device)
-    
-    # 2. Statistik-Datei laden (simuliert)
-    stats_path = "style_stats.pth"
-    style_stats = StyleStatistics(num_domains=4, num_layers=4)
-    torch.save(style_stats.state_dict(), stats_path)  # Demo: Erstelle leere Stats
-
-    # 3. TTA-Classifier initialisieren
-    tta = TTAClassifier(
-        model=model,
-        stats_path=stats_path,
-        device=device,
-        num_classes=7,
-        verbose=True
-    )
-
-    # 4. Testdaten laden (Beispiel mit PACS)
-    _, test_loader = get_dataset(
-        name="PACS",
-        root_dir="./data",
-        test_domain=1  # z.B. 1="cartoon" als Testdomäne
-    )
-
-    # 5. Vorhersage mit Style-Transfer zu Domain 2 ("sketch")
-    accuracy, probs = tta.predict(
-        test_loader,
-        target_domain=2,  # Ziel-Style: "sketch"
-        num_augments=1
-    )
-    
-    print(f"Accuracy mit Sketch-Style-Augmentierung: {accuracy:.2%}")
-
-if __name__ == "__main__":
-    main()
-"""
 
 def parse_args() -> Dict[str, Any]:
     """Parse command line arguments"""
@@ -582,9 +581,9 @@ def parse_args() -> Dict[str, Any]:
                        help='Path to style statistics file')
     
     # Experiment parameters
-    parser.add_argument('--num_augments', type=int, default=5, 
+    parser.add_argument('--num_augments', type=int, default=3, 
                        help='Number of augmentations per sample')
-    parser.add_argument('--seeds', nargs='+', type=int, default=[42, 123, 456, 789, 101112],
+    parser.add_argument('--seeds', nargs='+', type=int, default=[42, 7, 0],
                        help='Random seeds to run')
     parser.add_argument('--num_workers', type=int, default=4, 
                        help='Number of workers for data loading')

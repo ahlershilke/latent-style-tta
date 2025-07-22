@@ -5,7 +5,7 @@ import seaborn as sns
 import pandas as pd
 import torch.nn as nn
 import umap.umap_ as umap
-from typing import List, Dict, DefaultDict
+from typing import List, Dict, DefaultDict, Optional
 from data._datasets import DataLoader
 from sklearn.metrics import confusion_matrix, roc_curve, auc, precision_recall_curve
 from sklearn.manifold import TSNE
@@ -14,12 +14,12 @@ from data._datasets import DOMAIN_NAMES
 
 
 class Visualizer:
-    def __init__(self, config, class_names, domain_names, vis_dir): #, dataset):
-        self.config = config
+    def __init__(self, config: Optional[dir], class_names, domain_names, vis_dir: Optional[dir]): #, dataset):
+        self.config = config if config is not None else {}
         self.class_names = class_names
         self.domain_names = domain_names
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.vis_dir = self.config['vis_dir']
+        self.vis_dir = vis_dir
 
         subdirs = [
             "training_curves",
@@ -27,7 +27,8 @@ class Visualizer:
             "roc_pr",
             "heatmaps",
             "tsne",
-            "umap"
+            "umap",
+            "test_stats"
         ]
 
         for subdir in subdirs:
@@ -54,17 +55,222 @@ class Visualizer:
         plt.plot(train_accuracies, label='Training Accuracy', color='blue')
         plt.plot(val_accuracies, label='Validation Accuracy', color='green')
         plt.plot(test_accuracies, label='Test Accuracy', color='red')
-        
         plt.xlabel('Epoch')
         plt.ylabel('Accuracy')
         plt.title(f'Domain {domain}: Training, Validation and Test Accuracy')
         plt.legend()
         
         plt.tight_layout()
-        save_path = os.path.join(self.vis_dir, "training_curves", f'training_curves_domain_{domain}.png')
+        save_path = os.path.join(self.config['vis_dir'], "training_curves", f'training_curves_domain_{domain}.png')
         plt.savefig(save_path)
         plt.close()
+
     
+    def calculate_test_statistics(self, all_results):
+        """
+        Berechnet Worst-Case, Best-Case und Average-Case Test-Accuracies
+        
+        Args:
+            all_results: Liste von Ergebnissen aus mehreren Seeds
+            
+        Returns:
+            Dictionary mit berechneten Statistiken
+        """
+        # Test-Accuracies über alle Domains und Seeds sammeln
+        all_test_accuracies = []
+        per_domain_test_accuracies = {domain: [] for domain in self.domain_names}
+
+        for result in all_results:
+            # Gesamt-Test-Accuracy pro Seed
+            if 'avg_test_acc' in result:
+                all_test_accuracies.append(result['avg_test_acc'])
+            
+            # Domain-spezifische Test-Accuracies
+            for domain_idx, domain_name in enumerate(self.domain_names):
+                domain_key = f'domain_{domain_idx}'
+                if domain_key in result['per_domain'] and 'best_epoch' in result['per_domain'][domain_key]:
+                    domain_test_acc = result['per_domain'][domain_key]['best_epoch']['test_acc']
+                    if domain_test_acc is not None:
+                        per_domain_test_accuracies[domain_name].append(domain_test_acc)
+
+        valid_domains = {k: v for k, v in per_domain_test_accuracies.items() if len(v) > 0}
+        # Statistik-Berechnung
+        test_stats = {
+            'average_case': {
+                'mean': np.mean(all_test_accuracies) if all_test_accuracies else 0,
+                'std': np.std(all_test_accuracies) if all_test_accuracies else 0,
+                'min': np.min(all_test_accuracies) if all_test_accuracies else 0,
+                'max': np.max(all_test_accuracies) if all_test_accuracies else 0,
+                'all_values': all_test_accuracies
+            },
+            'best_case': {
+                'mean': np.mean([max(accs) for accs in valid_domains.values()]) if valid_domains else 0,
+                'std': np.std([max(accs) for accs in valid_domains.values()]) if valid_domains else 0,
+                'all_values': [max(accs) for accs in valid_domains.values()] if valid_domains else []
+            },
+            'worst_case': {
+                'mean': np.mean([min(accs) for accs in valid_domains.values()]) if valid_domains else 0,
+                'std': np.std([min(accs) for accs in valid_domains.values()]) if valid_domains else 0,
+                'all_values': [min(accs) for accs in valid_domains.values()] if valid_domains else []
+            },
+            'per_domain': {
+                domain: {
+                    'mean': np.mean(accs) if accs else 0,
+                    'std': np.std(accs) if accs else 0,
+                    'min': np.min(accs) if accs else 0,
+                    'max': np.max(accs) if accs else 0,
+                    'all_values': accs
+                }
+                for domain, accs in per_domain_test_accuracies.items()
+            }
+        }
+
+        # Visualisierung der Ergebnisse
+        self._plot_test_statistics(test_stats)
+        #self._save_test_statistics(test_stats)
+        
+        return test_stats
+
+    def _plot_test_statistics(self, test_stats):
+        """Erstellt Visualisierungen der Test-Statistiken"""
+        
+        # Boxplot für alle Test-Accuracies
+        plt.figure(figsize=(12, 6))
+        
+        # Daten vorbereiten
+        data = [
+            test_stats['average_case']['all_values'],
+            test_stats['best_case']['all_values'],
+            test_stats['worst_case']['all_values']
+        ]
+        
+        labels = ['Average Case', 'Best Case', 'Worst Case']
+        
+        # Boxplot erstellen
+        plt.boxplot(data, labels=labels, patch_artist=True)
+        plt.title('Test Accuracy Distribution Across Cases')
+        plt.ylabel('Accuracy')
+        plt.ylim(0, 1)
+        
+        # Speichern
+        save_path = os.path.join(self.vis_dir, "test_stats", "test_cases_boxplot.png")
+        plt.savefig(save_path, bbox_inches='tight')
+        plt.close()
+        
+        # Per-Domain Visualisierung
+        plt.figure(figsize=(12, 6))
+        
+        domain_means = [stats['mean'] for stats in test_stats['per_domain'].values()]
+        domain_stds = [stats['std'] for stats in test_stats['per_domain'].values()]
+        domain_names = list(test_stats['per_domain'].keys())
+        
+        plt.bar(domain_names, domain_means, yerr=domain_stds, capsize=5)
+        plt.title('Test Accuracy Per Test Domain')
+        plt.ylabel('Mean Accuracy')
+        plt.ylim(0, 1)
+        
+        save_path = os.path.join(self.vis_dir, "test_stats", "per_domain_accuracy.png")
+        plt.savefig(save_path, bbox_inches='tight')
+        plt.close()
+
+    def plot_accuracy_development(self, all_results, metric='val_acc'):
+        """
+        Plots the development of average, best, and worst case accuracies across seeds.
+
+        Args:
+            all_results: List of result dictionaries from multiple seeds
+            metric: 'val_acc' or 'test_acc' to plot validation or test accuracy
+        title: Custom plot title
+            save_path: Optional path to save the figure
+        """
+        # Determine max number of epochs across all runs
+        max_epochs = max(
+            len(run['per_domain'][domain][f'epoch_{metric}s'])
+            for run in all_results
+            for domain in run['per_domain']
+        )
+    
+        # Initialize containers
+        all_accuracies = np.zeros((len(all_results), len(self.domain_names), max_epochs))
+    
+        # Fill with data (pad shorter runs with their last value)
+        for seed_idx, run in enumerate(all_results):
+            for domain_idx, domain_data in enumerate(run['per_domain'].values()):
+                accs = domain_data[f'epoch_{metric}s']
+                padded_accs = accs + [accs[-1]] * (max_epochs - len(accs))
+                all_accuracies[seed_idx, domain_idx] = padded_accs
+    
+        # Calculate statistics
+        avg_acc = np.mean(all_accuracies, axis=(0, 1))  # Average across seeds and domains
+        best_acc = np.max(all_accuracies, axis=(0, 1))  # Best case
+        worst_acc = np.min(all_accuracies, axis=(0, 1))  # Worst case
+    
+        # Plot
+        plt.figure(figsize=(10, 6))
+        epochs = np.arange(1, max_epochs + 1)
+    
+        plt.plot(epochs, avg_acc, label='Average Case', color='blue')
+        plt.plot(epochs, best_acc, label='Best Case', linestyle='--', color='green')
+        plt.plot(epochs, worst_acc, label='Worst Case', linestyle='--', color='red')
+    
+        plt.fill_between(epochs, best_acc, worst_acc, color='gray', alpha=0.1)
+
+        plt.xlabel('Epoch')
+        plt.ylabel('Accuracy')
+        plt.title(f'{metric} Development Across Seeds')
+        plt.legend()
+
+        save_path = os.path.join(self.vis_dir, "test_stats", "accuracy_curves.png")
+        plt.savefig(save_path, bbox_inches='tight')
+        plt.close()
+
+
+    def _plot_accuracy_cases(val_accuracies, test_accuracies, domain):
+        """Plot worst case, average case and best case accuracies for TTA over multiple seeds"""
+        # Validation Accuracy detailed plot
+        plt.subplot(1, 2, 1)
+        if isinstance(val_accuracies[0], (list, tuple, np.ndarray)):
+            # Calculate min, mean, max across different runs/seeds
+            val_accuracies = np.array(val_accuracies)
+            val_min = np.min(val_accuracies, axis=0)
+            val_mean = np.mean(val_accuracies, axis=0)
+            val_max = np.max(val_accuracies, axis=0)
+        
+            plt.plot(val_mean, label='Average Case', color='green')
+            plt.fill_between(range(len(val_mean)), val_min, val_max, 
+                             color='green', alpha=0.2, label='Range (Min-Max)')
+            plt.plot(val_min, '--', color='darkgreen', alpha=0.5, label='Worst Case')
+            plt.plot(val_max, '--', color='lime', alpha=0.5, label='Best Case')
+        else:
+            plt.plot(val_accuracies, label='Validation Accuracy', color='green')
+        
+        plt.xlabel('Epoch')
+        plt.ylabel('Accuracy')
+        plt.title(f'Domain {domain}: Validation Accuracy Analysis')
+        plt.legend()
+    
+        # Test Accuracy detailed plot
+        plt.subplot(1, 2, 2)
+        if isinstance(test_accuracies[0], (list, tuple, np.ndarray)):
+            # Calculate min, mean, max across different runs/seeds
+            test_accuracies = np.array(test_accuracies)
+            test_min = np.min(test_accuracies, axis=0)
+            test_mean = np.mean(test_accuracies, axis=0)
+            test_max = np.max(test_accuracies, axis=0)
+        
+            plt.plot(test_mean, label='Average Case', color='red')
+            plt.fill_between(range(len(test_mean)), test_min, test_max, 
+                             color='red', alpha=0.2, label='Range (Min-Max)')
+            plt.plot(test_min, '--', color='darkred', alpha=0.5, label='Worst Case')
+            plt.plot(test_max, '--', color='salmon', alpha=0.5, label='Best Case')
+        else:
+            plt.plot(test_accuracies, label='Test Accuracy', color='red')
+        
+        plt.xlabel('Epoch')
+        plt.ylabel('Accuracy')
+        plt.title(f'Domain {domain}: Test Accuracy Analysis')
+        plt.legend()
+
 
     def _plot_confusion_matrix(self, model, loader, domain_name, normalize=True):
         """Generates and plots confusion matrix compatible with DomainSubset"""
@@ -104,7 +310,7 @@ class Visualizer:
         plt.xticks(rotation=45)
         plt.yticks(rotation=0)
        
-        save_path = os.path.join(self.vis_dir, "confusion_matrices", f'confusion_matrix_{domain_name}.png')
+        save_path = os.path.join(self.config['vis_dir'], "confusion_matrices", f'confusion_matrix_{domain_name}.png')
         plt.savefig(save_path, bbox_inches='tight')
         plt.close()
 
@@ -166,7 +372,7 @@ class Visualizer:
         plt.ylabel('True (Domain_Class)')
     
         # Save
-        save_path = os.path.join(self.vis_dir, "confusion_matrices", 'global_confusion_matrix.png')
+        save_path = os.path.join(self.config['vis_dir'], "confusion_matrices", 'global_confusion_matrix.png')
         plt.savefig(save_path, bbox_inches='tight', dpi=300)
         plt.close()
 
@@ -220,7 +426,7 @@ class Visualizer:
         plt.legend(loc="lower left")
         
         plt.tight_layout()      #TODO self.config
-        save_path = os.path.join(self.vis_dir, "roc_pr", f'roc_pr_curves_domain_{domain}.png')
+        save_path = os.path.join(self.config['vis_dir'], "roc_pr", f'roc_pr_curves_domain_{domain}.png')
         plt.savefig(save_path)
         plt.close()
     
@@ -309,7 +515,7 @@ class Visualizer:
         plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     
         plt.tight_layout()
-        save_path = os.path.join(self.vis_dir, "tsne", f'tsne_{domain_name}.png')
+        save_path = os.path.join(self.config['vis_dir'], "tsne", f'tsne_{domain_name}.png')
         plt.savefig(save_path, bbox_inches='tight', dpi=300)
         plt.close()
 
@@ -387,7 +593,7 @@ class Visualizer:
         plt.title(f'Embedded Dataset: t-SNE by Class\n(Total samples: {len(labels)})')
         plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.tight_layout()
-        save_path = os.path.join(self.vis_dir, "tsne", f'tsne_dataset.png')
+        save_path = os.path.join(self.config['vis_dir'], "tsne", f'tsne_dataset.png')
         plt.savefig(save_path, bbox_inches='tight', dpi=300)
         plt.close()
 
@@ -463,7 +669,7 @@ class Visualizer:
 
         # Save plot
         plt.tight_layout()
-        save_path = os.path.join(self.vis_dir, "tsne", 'tsne_full_embedded_dataset.png')
+        save_path = os.path.join(self.config['vis_dir'], "tsne", 'tsne_full_embedded_dataset.png')
         plt.savefig(save_path, bbox_inches='tight', dpi=300)
         plt.close()
 
@@ -564,7 +770,7 @@ class Visualizer:
     
         # Save and close
         plt.tight_layout()
-        save_path = os.path.join(self.vis_dir, "tsne", 'selected_raw_data_tsne.png')
+        save_path = os.path.join(self.config['vis_dir'], "tsne", 'selected_raw_data_tsne.png')
         plt.savefig(save_path, bbox_inches='tight', dpi=300)
         plt.close(fig)
 
@@ -633,7 +839,7 @@ class Visualizer:
         ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
 
         plt.tight_layout()
-        save_path = os.path.join(self.vis_dir, "tsne", 'complete_raw_data_tsne.png')
+        save_path = os.path.join(self.config['vis_dir'], "tsne", 'complete_raw_data_tsne.png')
         plt.savefig(save_path, bbox_inches='tight', dpi=300)
         plt.close(fig)
 
@@ -743,7 +949,7 @@ class Visualizer:
         domains = np.array(domains)
     
         # Create output directory
-        save_path = os.path.join(self.vis_dir, "tsne")
+        save_path = os.path.join(self.config['vis_dir'], "tsne")
     
         # Create combined figure for each layer
         for layer_name in block_names:
@@ -870,7 +1076,7 @@ class Visualizer:
     
         plt.suptitle(f'Domain {domain_name}: Saliency Visualizations', y=1.02)
         plt.tight_layout()
-        save_path = os.path.join(self.vis_dir, "heatmaps", f'saliency_{domain_name}.png')
+        save_path = os.path.join(self.config['vis_dir'], "heatmaps", f'saliency_{domain_name}.png')
         plt.savefig(save_path, bbox_inches='tight')
         plt.close()
 
@@ -967,7 +1173,7 @@ class Visualizer:
     
         plt.suptitle(f'Domain {domain_name}: Grad-CAM Visualizations', y=1.02)
         plt.tight_layout()
-        save_path = os.path.join(self.vis_dir, "heatmaps", f'gradcam_clean_{domain_name}.png')
+        save_path = os.path.join(self.config['vis_dir'], "heatmaps", f'gradcam_clean_{domain_name}.png')
         plt.savefig(save_path, bbox_inches='tight', dpi=300)
         plt.close()
 
@@ -1029,7 +1235,7 @@ class Visualizer:
         plt.tight_layout()
     
         # Save
-        save_path = os.path.join(self.vis_dir, 'umap', f'umap_{domain_name}.png')
+        save_path = os.path.join(self.config['vis_dir'], 'umap', f'umap_{domain_name}.png')
         plt.savefig(save_path, bbox_inches='tight', dpi=300)
         plt.close()
     
@@ -1089,7 +1295,7 @@ class Visualizer:
         plt.tight_layout()
     
         # Save
-        save_path = os.path.join(self.vis_dir, "umap", f'raw_umap_{domain_name}.png')
+        save_path = os.path.join(self.config['vis_dir'], "umap", f'raw_umap_{domain_name}.png')
         plt.savefig(save_path, bbox_inches='tight', dpi=300)
         plt.close()
     
@@ -1130,7 +1336,7 @@ class Visualizer:
         ax3.tick_params(axis='x', rotation=45)
         
         plt.tight_layout()
-        save_path = os.path.join(self.vis_dir, 'comparative_metrics.png')
+        save_path = os.path.join(self.config['vis_dir'], 'comparative_metrics.png')
         plt.savefig(save_path, bbox_inches='tight')
         plt.close()
 
