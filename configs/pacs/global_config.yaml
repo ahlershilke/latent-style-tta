@@ -1,0 +1,10 @@
+lr: 0.0023943069919445175
+optimizer: SGD
+scheduler: StepLR
+weight_decay: 1.7620534682144846e-05
+batch_size: 8
+momentum: 0.555253587470099
+nesterov: false
+step_size: 11
+gamma: 0.39485970629446865
+dropout: 0.18288667443564552
