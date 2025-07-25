@@ -467,10 +467,18 @@ class TrainingFramework:
             k: v for k, v in model.state_dict().items() 
             if not k.startswith('style_stats.')
         }
-        
+
+        style_stats_state = model.style_stats.state_dict()
+        for layer in range(4):
+            layer_key = str(layer)
+            if layer_key in model.style_stats.mu_dict:
+                print(f"Layer {layer} mu stats - min: {model.style_stats.mu_dict[layer_key].min().item():.4f}, "
+                      f"max: {model.style_stats.mu_dict[layer_key].max().item():.4f}")
+
         torch.save({
             'model_state_dict': model_state_dict,
-            'style_stats': model.style_stats.state_dict(),
+            #'style_stats': model.style_stats.state_dict(),
+            'style_stats': style_stats_state,
             'style_stats_config': model.style_stats_config,
             'fold': self.current_domain,
             'config': {
@@ -507,7 +515,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_root', type=str, default="/mnt/data/hahlers/datasets")
     parser.add_argument('--hparam_file', type=str, default="configs/pacs/global_config.yaml")
-    parser.add_argument('--num_epochs', type=int, default=50, help='Number of training epochs')
+    parser.add_argument('--num_epochs', type=int, default=2, help='Number of training epochs')  #TODO wieder ändern auf 50!!
     parser.add_argument('--domains', type=int, default=4, help='Number of domains')
     args = parser.parse_args()
 

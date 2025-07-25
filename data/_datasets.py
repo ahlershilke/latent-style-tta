@@ -28,15 +28,17 @@ DOMAIN_NAMES = {
 
 class DomainSubset(Subset):
     """Wraps a dataset and adds domain index to the output."""
-    def __init__(self, dataset, indices, domain_idx, original_domain_idx=None):
+    def __init__(self, dataset, indices, domain_idx=None, original_domain_indices=None):
         super().__init__(dataset, indices)
         self.indices = list(indices) if not isinstance(indices, list) else indices
-        self.domain_idx = domain_idx
-        self.original_domain_idx = original_domain_idx or domain_idx # neuer fix, evtl wieder entfernen
+        #self.domain_idx = domain_idx
+        #self.original_domain_idx = original_domain_idx or domain_idx # neuer fix, evtl wieder entfernen
+        self.original_domain_indices = original_domain_indices if original_domain_indices is not None else [domain_idx] * len(indices)
     
     def __getitem__(self, idx):
         img, label = super().__getitem__(idx)
-        return img, label, self.domain_idx
+        #return img, label, self.domain_idx
+        return img, label, self.original_domain_indices[idx]
 
 
 class MultiDomainDataset:
@@ -300,25 +302,40 @@ class DomainDataset(MultiDomainDataset):
                     random_state=42,
                     stratify=targets
                 )
+
+                train_original_domains = [orig_domain_idx] * len(train_idx)
+                val_original_domains = [orig_domain_idx] * len(val_idx)
             
                 # Wende neues domain_idx-Mapping an
-                new_domain_idx = domain_idx_mapping[orig_domain_idx]
-                train_subsets.append(DomainSubset(domain_data, train_idx, new_domain_idx, orig_domain_idx))
-                val_subsets.append(DomainSubset(domain_data, val_idx, new_domain_idx, orig_domain_idx))
+                #new_domain_idx = domain_idx_mapping[orig_domain_idx]
+                train_subsets.append(DomainSubset(
+                    domain_data, 
+                    train_idx, 
+                    domain_idx=domain_idx_mapping[orig_domain_idx], 
+                    original_domain_indices=train_original_domains
+                ))
+                val_subsets.append(DomainSubset(
+                    domain_data, 
+                    val_idx, 
+                    domain_idx=domain_idx_mapping[orig_domain_idx], 
+                    original_domain_indices=val_original_domains
+                ))
 
             # 4. Test-Domain mit konsistentem Index
             test_data = []  # TODO hier war was, aber was?
             test_data.append(DomainSubset(
                 self.data[test_domain_idx],
                 indices=list(range(len(self.data[test_domain_idx]))),
-                domain_idx=test_domain_new_idx,
-                original_domain_idx=test_domain_idx
+                #domain_idx=test_domain_new_idx,
+                domain_idx=len(train_domains),
+                #original_domain_idx=test_domain_idx
+                original_domain_indices=[test_domain_idx] * len(self.data[test_domain_idx])
             ))
 
             splits.append((
                 ConcatDataset(train_subsets),  # Train
                 ConcatDataset(val_subsets),    # Val
-                ConcatDataset(test_data)                      # Test
+                ConcatDataset(test_data)       # Test
             ))
     
         return splits
@@ -419,4 +436,4 @@ class VLCS(DomainDataset):
                 except Exception:
                     corrupted.append(os.path.join(dpath, fn))
 
-        print("Beschädigte Dateien:", corrupted)
+        print("Corrupted files:", corrupted)

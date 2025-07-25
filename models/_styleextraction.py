@@ -124,12 +124,15 @@ class StyleStatistics(nn.Module):
         """
         # Input Validation
         assert domain_idx.dim() == 1, "domain_idx must be 1D"
+        #print(f"mu.shape[0] {mu.shape[0]}")
+        #print(f"domain_idx.shape[0] {domain_idx.shape[0]}")
         assert mu.shape[0] == domain_idx.shape[0], "Batch dimension mismatch"
     
         # Squeeze auf [B,C] falls nötig
         mu = mu.squeeze(-1).squeeze(-1) if mu.dim() == 4 else mu
         sig = sig.squeeze(-1).squeeze(-1) if sig.dim() == 4 else sig
     
+        """
         for d in torch.unique(domain_idx):
             mask = (domain_idx == d)
             if mask.sum() == 0:
@@ -141,10 +144,14 @@ class StyleStatistics(nn.Module):
         
             # EMA Update mit dynamischem Momentum
             self._ema_update(d.item(), layer_idx, mu[mask], sig[mask])
+        """
+        for domain in domain_idx.unique():
+            mask = (domain_idx == domain)
+            self._ema_update(domain, layer_idx, mu[mask], sig[mask])
 
-
+    """
     def _update(self, domain_idx: int, layer_idx: int, mu: torch.Tensor, sig: torch.Tensor):
-        """Update statistics for given domain and layer with mode-specific rules"""
+        #Update statistics for given domain and layer with mode-specific rules
         if not self._should_update_layer(layer_idx):
             return
 
@@ -152,12 +159,13 @@ class StyleStatistics(nn.Module):
         #sig = sig.squeeze(-1).squeeze(-1)  # [B, C]
 
         #B = mu.shape[0]
-
+        #domain_idx ist ein int hier
         if not isinstance(domain_idx, torch.Tensor):
             #domain_idx = torch.tensor(domain_idx, device=mu.device)
             domain_idx = torch.tensor([domain_idx], device=mu.device)
 
         self._batch_update(domain_idx, layer_idx, mu, sig)
+    """
         
 
     def _should_update_layer(self, layer_idx: int) -> bool:
@@ -740,7 +748,6 @@ class StyleExtractorManager:
                         extractor,
                         domain_idx,
                         target_layer
-                        #model.style_stats.target_layer
                     )
                 
             elif extractor.mode == "selective":
@@ -775,13 +782,14 @@ class StyleExtractorManager:
         layer_idx: int
     ) -> None:
         """Transfers statistics for a single layer from source to target extractor"""
-        
-        if str(layer_idx) not in source_stats.mu_dict:
+        layer_key = str(layer_idx)
+
+        if layer_key not in source_stats.mu_dict:
             print(f"Warning: Layer {layer_idx} not found in source stats")
             return
         
-        if str(layer_idx) not in target_extractor.mu_dict:
-            num_channels = source_stats.mu_dict[str(layer_idx)].shape[1]
+        if layer_key not in target_extractor.mu_dict:
+            num_channels = source_stats.mu_dict[layer_key].shape[1]
             print(f"Initializing layer {layer_idx} with {num_channels} channels")
             target_extractor._init_layer(layer_idx, num_channels)
 
@@ -792,14 +800,14 @@ class StyleExtractorManager:
         print("Target extractor layers before transfer:", list(target_extractor.mu_dict.keys()))
         print(f"Transferring layer {layer_idx} for domain {domain_idx}")
 
-        src_mu = source_stats.mu_dict[str(layer_idx)][domain_idx]
-        src_sig = source_stats.sig_dict[str(layer_idx)][domain_idx]
+        src_mu = source_stats.mu_dict[layer_key][domain_idx]
+        src_sig = source_stats.sig_dict[layer_key][domain_idx]
     
         if target_extractor.target_layer is None:
             target_extractor.target_layer = layer_idx
         
         # Initialize layer if needed
-        if str(layer_idx) not in target_extractor.mu_dict:
+        if layer_key not in target_extractor.mu_dict:
             target_extractor._init_layer(layer_idx, src_mu.shape[0])
     
         # Transfer stats
@@ -862,14 +870,26 @@ class StyleExtractorManager:
     
         # Load checkpoint with weights_only=True for security
         checkpoint = torch.load(model_path, map_location=self.device, weights_only=True)
+        print("Keys in checkpoint:", checkpoint.keys())
+        print("Style stats keys:", checkpoint["style_stats"].keys())
+        print("style stats mu_dict.0:", checkpoint["style_stats"]["mu_dict.0"])
+        print("style stats mu_dict.1:", checkpoint["style_stats"]["mu_dict.1"])
+        print("style stats mu_dict.2:", checkpoint["style_stats"]["mu_dict.2"])
+        print("style stats mu_dict.3:", checkpoint["style_stats"]["mu_dict.3"])
     
         # Initialize model
         model = model_class(**model_args).to(self.device)
     
         # Load model weights (skip style_stats keys)
-        model_state_dict = {k: v for k, v in checkpoint['model_state_dict'].items() 
-                           if not k.startswith('style_stats.')}
-        model.load_state_dict(model_state_dict, strict=False)
+
+        #model_state_dict = {k: v for k, v in checkpoint['model_state_dict'].items() 
+         #                  if not k.startswith('style_stats.'),}
+        #model.load_state_dict(model_state_dict, strict=False)
+        model.load_state_dict({
+            k: v for k,v in checkpoint['model_state_dict'].items() 
+            if not k.startswith('style_stats.')
+        }, strict=False)
+        print(f"model.style_stats: {model.style_stats}")
     
         # Load style statistics if available
         if 'style_stats' in checkpoint:
@@ -886,6 +906,19 @@ class StyleExtractorManager:
                                                 torch.zeros(model.style_stats.num_domains,
                                                           dtype=torch.long))
         
+            
+            for key, value in checkpoint['style_stats'].items():
+                if key.startswith('mu_dict'):
+                    layer = key.split('.')[-1]
+                    if f'mu_dict.{layer}' not in model.style_stats.mu_dict:
+                        print(f"initializing model.style_stats.mu_dict for layer {layer}")
+                        model.style_stats._init_layer(int(layer), value.shape[1])
+            
+                elif key.startswith('sig_dict'):
+                    layer = key.split('.')[-1]
+                    if f'sig_dict.{layer}' not in model.style_stats.sig_dict:
+                        model.style_stats._init_layer(int(layer), value.shape[1])
+            
             # Load the style stats
             model.style_stats.load_state_dict(checkpoint['style_stats'], strict=False)
     
