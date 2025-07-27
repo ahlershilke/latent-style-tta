@@ -56,6 +56,7 @@ class StyleStatistics(nn.Module):
         self.device = torch.device(device)
 
         self.domain_names = domain_names if domain_names is not None else [f"domain_{i}" for i in range(num_domains)]
+        self.train_domains = None
 
         self.register_buffer('layer_counts', 
                              torch.zeros(num_domains, num_layers, dtype=torch.long))
@@ -64,7 +65,15 @@ class StyleStatistics(nn.Module):
         # initialize storage structures
         self.mu_dict = nn.ParameterDict()  # {layer_idx: parameter[num_domains, C, 1, 1]}
         self.sig_dict = nn.ParameterDict()
-        #self.register_buffer('count', torch.zeros(num_domains, dtype=torch.long))
+        
+        resnet_layer_channels = {
+            0: 256,   # Layer1 (nach BasicBlock/Bottleneck)
+            1: 512,   # Layer2
+            2: 1024,  # Layer3
+            3: 2048   # Layer4
+        }
+        for layer_idx in range(num_layers):
+            self._init_layer(layer_idx, resnet_layer_channels[layer_idx])
 
         self.target_layer = None
         if self.mode == "selective":
@@ -87,32 +96,6 @@ class StyleStatistics(nn.Module):
         self._initialized = True
     
 
-    """
-    def _get_dynamic_momentum(self, layer_idx: int, update_count:int) -> float:
-        if self.mode == "selective" and str(layer_idx) in self.layer_momentum:
-            base_momentum = torch.sigmoid(self.layer_momentum[str(layer_idx)])
-
-        else:
-            base_momentum = self.ema_momentum
-        
-        if update_count < self.WARMUP_UPDATES:
-            return base_momentum * (update_count / self.WARMUP_UPDATES)
-        
-        return base_momentum
-
-    
-    def _initialize_buffers(self):
-        #Initializes the data structures for storing style statistics.
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-
-        self.mu_dict = nn.ParameterDict()
-        self.sig_dict = nn.ParameterDict()
-    
-        self.register_buffer("count", torch.zeros(self.num_domains, dtype=torch.long, device=device))
-        self._initialized = True    # to prevent re-initialization
-    """
-
-
     def _batch_update(self, domain_idx: torch.Tensor, layer_idx: int, 
                       mu: torch.Tensor, sig: torch.Tensor):
         """
@@ -132,40 +115,9 @@ class StyleStatistics(nn.Module):
         mu = mu.squeeze(-1).squeeze(-1) if mu.dim() == 4 else mu
         sig = sig.squeeze(-1).squeeze(-1) if sig.dim() == 4 else sig
     
-        """
-        for d in torch.unique(domain_idx):
-            mask = (domain_idx == d)
-            if mask.sum() == 0:
-                continue
-            
-            # Vektorisiertes Mittelwertberechnung
-            #mu_mean = mu[mask].mean(dim=0)  # [C,]
-            #sig_mean = sig[mask].mean(dim=0) # [C,]
-        
-            # EMA Update mit dynamischem Momentum
-            self._ema_update(d.item(), layer_idx, mu[mask], sig[mask])
-        """
         for domain in domain_idx.unique():
             mask = (domain_idx == domain)
             self._ema_update(domain, layer_idx, mu[mask], sig[mask])
-
-    """
-    def _update(self, domain_idx: int, layer_idx: int, mu: torch.Tensor, sig: torch.Tensor):
-        #Update statistics for given domain and layer with mode-specific rules
-        if not self._should_update_layer(layer_idx):
-            return
-
-        #mu = mu.squeeze(-1).squeeze(-1)  # [B, C]
-        #sig = sig.squeeze(-1).squeeze(-1)  # [B, C]
-
-        #B = mu.shape[0]
-        #domain_idx ist ein int hier
-        if not isinstance(domain_idx, torch.Tensor):
-            #domain_idx = torch.tensor(domain_idx, device=mu.device)
-            domain_idx = torch.tensor([domain_idx], device=mu.device)
-
-        self._batch_update(domain_idx, layer_idx, mu, sig)
-    """
         
 
     def _should_update_layer(self, layer_idx: int) -> bool:
@@ -371,34 +323,6 @@ class StyleStatistics(nn.Module):
             if isinstance(tensor, torch.Tensor):
                 tensor = tensor.detach().cpu()
             return [float(x) for x in tensor.squeeze().cpu().numpy().ravel()]
-        
-        """
-        stats_dict = {
-            "domain_stats": {
-                self.domain_names[domain_id]: {  # Use actual domain name here
-                    "mu": flatten_stats(self.mu_dict[str(self.target_layer)][domain_id]),
-                    "sig": flatten_stats(self.sig_dict[str(self.target_layer)][domain_id]),
-                    "count": int(self.count[domain_id].item())
-                }
-                for domain_id in range(self.num_domains)
-            },
-            "metadata": {
-                "mode": self.mode,
-                "target_layer": self.target_layer if hasattr(self, 'target_layer') else None,
-                "num_domains": self.num_domains,
-                "domain_names": self.domain_names
-            }
-        }
-        
-
-        if self.mode == "single":
-            layer_key = str(self.target_layer)
-        elif self.mode == "average":
-            # For average mode, we need to handle all layers
-            layer_key = "0"  # Default to first layer for structure, but handle all in metadata
-        else:
-            layer_key = "0"  # Fallback
-        """
     
         # Prepare base stats structure
         stats_dict = {
@@ -407,64 +331,30 @@ class StyleStatistics(nn.Module):
                 "mode": self.mode,
                 "num_domains": self.num_domains,
                 "domain_names": self.domain_names,
-                "target_layer": int(self.target_layer) if hasattr(self, 'target_layer') and self.mode != "average" else None
+                "target_layer": int(self.target_layer) if hasattr(self, 'target_layer') and self.mode != "average" else None,
+                "training_domains": [self.domain_names[i] for i in self.train_domains] if hasattr(self, 'train_domains') else "all"
             }
         }
 
-        """
-        # Handle different modes
-        for domain_id in range(self.num_domains):
-            if self.count[domain_id].item() == 0:
-                continue  # Skip domains with no data
-            
-            if self.mode == "single":
-                layer_key = str(self.target_layer)
-                if layer_key in self.mu_dict:
-                    stats_dict["domain_stats"][self.domain_names[domain_id]] = {
-                        "mu": flatten_stats(self.mu_dict[layer_key][domain_id]),
-                        "sig": flatten_stats(self.sig_dict[layer_key][domain_id]),
-                        "count": int(self.count[domain_id].item())
-                    }
-            
-            elif self.mode == "average":
-                # For average mode, we need to handle normalization
-                mus = []
-                sigs = []
-            
-                for layer in self.mu_dict.keys():
-                    layer_mu = self.mu_dict[layer][domain_id]
-                    layer_sig = self.sig_dict[layer][domain_id]
-                
-                    # Normalize each layer's stats
-                    layer_mu = (layer_mu - layer_mu.min()) / (layer_mu.max() - layer_mu.min() + 1e-8)
-                    layer_sig = (layer_sig - layer_sig.min()) / (layer_sig.max() - layer_sig.min() + 1e-8)
-                
-                    mus.append(layer_mu)
-                    sigs.append(layer_sig)
-            
-                if mus:  # Only add if we have data
-                    avg_mu = torch.mean(torch.stack(mus), dim=0)
-                    avg_sig = torch.mean(torch.stack(sigs), dim=0)
-                
-                    stats_dict["domain_stats"][self.domain_names[domain_id]] = {
-                        "mu": flatten_stats(avg_mu),
-                        "sig": flatten_stats(avg_sig),
-                        "count": int(self.count[domain_id].item())
-                    }
-        """
+        domains_to_save = self.train_domains if hasattr(self, 'train_domains') and self.train_domains is not None else range(self.num_domains)
 
-        for domain_id in range(self.num_domains):
-            if self.count[domain_id].item() == 0:
-                print(f"Skipping domain {domain_id} - no data")
-                continue
+        for domain_id in domains_to_save:
+            #if self.count[domain_id].item() == 0:
+                #print(f"Skipping domain {self.domain_names[domain_id]} - no data collected")
+                #continue
             
-            mu, sig = self.get_style_stats(domain_id)
-        
-            stats_dict["domain_stats"][self.domain_names[domain_id]] = {
-                "mu": flatten_stats(mu),
-                "sig": flatten_stats(sig),
-                "count": int(self.count[domain_id].item())
-            }
+            try:
+                mu, sig = self.get_style_stats(domain_id)
+            
+                stats_dict["domain_stats"][self.domain_names[domain_id]] = {
+                    "mu": flatten_stats(mu),
+                    "sig": flatten_stats(sig),
+                    "count": int(self.count[domain_id].item()),
+                    "is_training_domain": domain_id in self.train_domains if hasattr(self, 'train_domains') else True
+                }
+            except Exception as e:
+                print(f"Error processing domain {self.domain_names[domain_id]}: {str(e)}")
+                continue
         
         with open(filepath, "w") as f:
             json.dump(stats_dict, f, indent=2)
@@ -583,46 +473,6 @@ class StyleExtractorManager:
         """Creates StyleExtractor instances for all desired modes"""
         modes = self._get_default_modes()
         extractors = {}
-        
-        """
-        for layer_idx in range(4):  # For all 4 ResNet layers
-            name = f'single_{layer_idx}'
-            extractors[name] = StyleStatistics(
-                num_domains=len(self.domain_names),
-                num_layers=4,
-                domain_names=self.domain_names,
-                mode='single',
-                target_layer=layer_idx,  # Explicit layer assignment
-                use_ema=True,
-                ema_momentum=0.9,
-                device=self.device
-            )
-    
-        # Create average extractor
-        extractors['average'] = StyleStatistics(
-            num_domains=len(self.domain_names),
-            num_layers=4,
-            domain_names=self.domain_names,
-            mode='average',
-            use_ema=True,
-            ema_momentum=0.9,
-            device=self.device
-        )
-        
-
-        for name, config in modes.items():        
-            extractors[name] = StyleStatistics(
-                num_domains=len(self.domain_names),
-                num_layers=4,
-                domain_names=self.domain_names,
-                mode=config['mode'],
-                layer_config=config['config'],
-                use_ema=True,
-                ema_momentum=0.9,
-                device=self.device
-                #target_layer=target_layer
-            )
-        """
 
         for name, config in modes.items():
             # Extrahiere die Parameter für den aktuellen Modus
@@ -704,10 +554,12 @@ class StyleExtractorManager:
             _ = model(dummy_input, domain_idx=domain_idx)
 
         """
-        print(domain_indices_to_extract)
+        print(f"training domains: {domain_indices_to_extract}")
         if domain_indices_to_extract is None:
             domain_indices_to_extract = list(range(len(self.domain_names)))
 
+        for extractor in self.extractors.values():
+            extractor.train_domains = domain_indices_to_extract
         """
         for domain_idx in domain_indices_to_extract:
             dummy_input = torch.randn(1, 3, 224, 224).to(self.device)
@@ -719,7 +571,7 @@ class StyleExtractorManager:
                 print("Layer counts:", model.style_stats.layer_counts[domain_idx])
         """
         
-
+        print(f"self.extractors.items(): {self.extractors.items()}")
             # Für jeden Extractor-Modus speichern
         for extractor_name, extractor in self.extractors.items():
             #target_layer = extractor.target_layer
@@ -737,22 +589,15 @@ class StyleExtractorManager:
                     print(f"Stats for domain {domain_idx}:")
                     print("Count:", model.style_stats.count[domain_idx].item())
                     print("Layer counts:", model.style_stats.layer_counts[domain_idx])
+                
+                if model.style_stats.count[domain_idx].item() == 0:
+                    print(f"Skipping domain {domain_idx} - no data")
+                    continue
 
                 # Hole Statistiken aus dem Original-Modell
-            if extractor.mode == "single":
-                target_layer = int(extractor_name.split('_')[-1])
-                #model.style_stats.target_layer = target_layer
-                if str(target_layer) in model.style_stats.mu_dict:
-                    self._transfer_layer_stats(
-                        model.style_stats,
-                        extractor,
-                        domain_idx,
-                        target_layer
-                    )
-                
-            elif extractor.mode == "selective":
-                #target_layer =  #hier müssen die jeweiligen layer der config irgendwie rein
-                for target_layer in extractor.target_layer:
+                if extractor.mode == "single":
+                    target_layer = int(extractor_name.split('_')[-1])
+                    #model.style_stats.target_layer = target_layer
                     if str(target_layer) in model.style_stats.mu_dict:
                         self._transfer_layer_stats(
                             model.style_stats,
@@ -760,16 +605,27 @@ class StyleExtractorManager:
                             domain_idx,
                             target_layer
                         )
+
+                elif extractor.mode == "selective":
+                    #target_layer =  #hier müssen die jeweiligen layer der config irgendwie rein
+                    for target_layer in extractor.target_layer:
+                        if str(target_layer) in model.style_stats.mu_dict:
+                            self._transfer_layer_stats(
+                                model.style_stats,
+                                extractor,
+                                domain_idx,
+                                target_layer
+                            )
                 
-            elif extractor.mode == "average":
-                for target_layer in range(4):  # All 4 layers
-                    if str(target_layer) in model.style_stats.mu_dict:
-                        self._transfer_layer_stats(
-                            model.style_stats,
-                            extractor,
-                            domain_idx,
-                            target_layer
-                        )
+                elif extractor.mode == "average":
+                    for target_layer in range(4):  # All 4 layers
+                        if str(target_layer) in model.style_stats.mu_dict:
+                            self._transfer_layer_stats(
+                                model.style_stats,
+                                extractor,
+                                domain_idx,
+                                target_layer
+                            )
                                         
         self.save_style_stats(domain_name, results_dir)
 
@@ -800,8 +656,8 @@ class StyleExtractorManager:
         print("Target extractor layers before transfer:", list(target_extractor.mu_dict.keys()))
         print(f"Transferring layer {layer_idx} for domain {domain_idx}")
 
-        src_mu = source_stats.mu_dict[layer_key][domain_idx]
-        src_sig = source_stats.sig_dict[layer_key][domain_idx]
+        src_mu = source_stats.mu_dict[layer_key][domain_idx].clone()
+        src_sig = source_stats.sig_dict[layer_key][domain_idx].clone()
     
         if target_extractor.target_layer is None:
             target_extractor.target_layer = layer_idx
@@ -811,48 +667,12 @@ class StyleExtractorManager:
             target_extractor._init_layer(layer_idx, src_mu.shape[0])
     
         # Transfer stats
-        target_extractor.mu_dict[str(layer_idx)].data[domain_idx] = src_mu.clone()
-        target_extractor.sig_dict[str(layer_idx)].data[domain_idx] = src_sig.clone()
-        target_extractor.count[domain_idx] = source_stats.count[domain_idx]
-        target_extractor.layer_counts[domain_idx, layer_idx] = source_stats.layer_counts[domain_idx, layer_idx]
-        """
-
-        layer_key = str(layer_idx)
-        if layer_key not in source_stats.mu_dict:
-            print(f"Warning: Layer {layer_idx} not found in source stats")
-            return
-        
-        num_channels = source_stats.mu_dict[layer_key].shape[1]
-
-        print("\n=== Transferring layer stats ===")
-        print(f"Domain: {domain_idx} ({self.domain_names[domain_idx]})")
-        print(f"Layer: {layer_idx}")
-        print(f"Source layers: {list(source_stats.mu_dict.keys())}")
-        print(f"Target layers before: {list(target_extractor.mu_dict.keys())}")
-
-        if layer_key not in target_extractor.mu_dict:
-            print(f"Initializing new layer {layer_idx} in target extractor")
-            target_extractor._init_layer(layer_idx, num_channels)
-        elif target_extractor.mu_dict[layer_key].shape[1] != num_channels:
-            print(f"Warning: Channel mismatch for layer {layer_idx} - reinitializing")
-            target_extractor._init_layer(layer_idx, num_channels)
-
-        try:
-            target_extractor.mu_dict[layer_key].data[domain_idx] = \
-            source_stats.mu_dict[layer_key][domain_idx].clone()
-            target_extractor.sig_dict[layer_key].data[domain_idx] = \
-            source_stats.sig_dict[layer_key][domain_idx].clone()
-
+        if domain_idx in target_extractor.train_domains:
+            target_extractor.mu_dict[layer_key].data[domain_idx] = src_mu.clone()
+            target_extractor.sig_dict[layer_key].data[domain_idx] = src_sig.clone()
             target_extractor.count[domain_idx] = source_stats.count[domain_idx]
-            target_extractor.layer_counts[domain_idx, layer_idx] = \
-            source_stats.layer_counts[domain_idx, layer_idx]
-
-            print("Transfer successful")
-
-        except Exception as e:
-            print(f"Error transferring stats for layer {layer_idx}: {str(e)}")
-        """
-
+            target_extractor.layer_counts[domain_idx, layer_idx] = source_stats.layer_counts[domain_idx, layer_idx]
+                
 
     def _load_model(self, model_path: str, model_class: nn.Module, model_args: dict) -> nn.Module:
         """Loads a model from checkpoint including style statistics
@@ -872,6 +692,8 @@ class StyleExtractorManager:
         checkpoint = torch.load(model_path, map_location=self.device, weights_only=True)
         print("Keys in checkpoint:", checkpoint.keys())
         print("Style stats keys:", checkpoint["style_stats"].keys())
+        print("layer_counts:", checkpoint["style_stats"]["layer_counts"])
+        print("counts:", checkpoint["style_stats"]["count"])
         print("style stats mu_dict.0:", checkpoint["style_stats"]["mu_dict.0"])
         print("style stats mu_dict.1:", checkpoint["style_stats"]["mu_dict.1"])
         print("style stats mu_dict.2:", checkpoint["style_stats"]["mu_dict.2"])
@@ -910,17 +732,19 @@ class StyleExtractorManager:
             for key, value in checkpoint['style_stats'].items():
                 if key.startswith('mu_dict'):
                     layer = key.split('.')[-1]
-                    if f'mu_dict.{layer}' not in model.style_stats.mu_dict:
+                    if layer not in model.style_stats.mu_dict:
                         print(f"initializing model.style_stats.mu_dict for layer {layer}")
                         model.style_stats._init_layer(int(layer), value.shape[1])
             
                 elif key.startswith('sig_dict'):
                     layer = key.split('.')[-1]
-                    if f'sig_dict.{layer}' not in model.style_stats.sig_dict:
+                    if layer not in model.style_stats.sig_dict:
                         model.style_stats._init_layer(int(layer), value.shape[1])
             
             # Load the style stats
             model.style_stats.load_state_dict(checkpoint['style_stats'], strict=False)
+            #model.style_stats.count.data.copy_(checkpoint['style_stats']['count'])
+            #model.style_stats.layer_counts.data.copy_(checkpoint['style_stats']['layer_counts'])
     
         # Enable style stats collection
         model.enable_style_stats(True)

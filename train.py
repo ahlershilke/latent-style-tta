@@ -185,6 +185,10 @@ class TrainingFramework:
             print(f"\nExtracting style stats from {domain_name} model (trained on {len(self.domain_names)-1} domains)...")
             
             train_domain_indices = [i for i in range(len(self.domain_names)) if i != domain_idx]
+            for extractor in self.style_manager.extractors.values():
+                extractor.train_domains = train_domain_indices
+                if hasattr(extractor, 'target_layer'):
+                    extractor.target_layer = extractor.target_layer
             
             self.style_manager.extract_from_saved_model(
                 model_path=model_path,
@@ -508,51 +512,14 @@ class TrainingFramework:
 
 
 def main():
-    #TrainingFramework.set_seeds(42)
-
     seeds = [42, 7, 0]
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_root', type=str, default="/mnt/data/hahlers/datasets")
     parser.add_argument('--hparam_file', type=str, default="configs/pacs/global_config.yaml")
-    parser.add_argument('--num_epochs', type=int, default=2, help='Number of training epochs')  #TODO wieder ändern auf 50!!
+    parser.add_argument('--num_epochs', type=int, default=50, help='Number of training epochs')
     parser.add_argument('--domains', type=int, default=4, help='Number of domains')
     args = parser.parse_args()
-
-    """
-    # Konfiguration
-    config = {
-        'data_root': args.data_root if args.data_root else "/mnt/data/hahlers/datasets",
-        'hparam_file': args.hparam_file if args.hparam_file else "/mnt/data/hahlers/tuning/configs/global_config.yaml",
-        'num_epochs': args.num_epochs,
-        'domains': args.domains,
-        'log_dir': "experiments/train_results/logs",
-        'save_dir': "experiments/train_results/saved_models",
-        'vis_dir': "experiments/train_results/visualizations"
-    }
-    
-    # Verzeichnisse erstellen
-    #os.makedirs(config['data_root'], exist_ok=True)
-    os.makedirs(config['log_dir'], exist_ok=True)
-    os.makedirs(config['save_dir'], exist_ok=True)
-    os.makedirs(config['vis_dir'], exist_ok=True)
-
-    full_dataset = PACS(root=config['data_root'], test_domain=None)
-    #full_dataset = VLCS(root=config['data_root'], test_domain=None)
-
-    trainer = TrainingFramework(
-        config=config,
-        dataset=full_dataset,
-        class_names=full_dataset.classes,
-        domain_names=DOMAIN_NAMES["PACS"]
-    )
-    
-    hparam_path = args.hparam_file if args.hparam_file else config['hparam_file']
-    results = trainer.run(args.hparam_file)
-    
-    print("\n=== Training Complete ===")
-    print(f"Average Validation Accuracy: {results['avg_val_acc']:.2%}")
-    """
 
     base_config = {
         'data_root': args.data_root,
