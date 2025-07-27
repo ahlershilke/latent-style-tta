@@ -52,7 +52,6 @@ class TrainingFramework:
         self.domain_names = domain_names
         self.lodo_splits = self.full_dataset.generate_lodo_splits()
 
-        #self.collate_fn = self.full_dataset.collate_fn if hasattr(self.full_dataset, 'collate_fn') else default_collate
         self.collate_fn = self._custom_collate_fn
         
         self.visualizer = Visualizer(
@@ -205,9 +204,6 @@ class TrainingFramework:
                 results_dir=os.path.join(self.config['save_dir'], "style_stats"),
                 domain_indices_to_extract=train_domain_indices
             )
-            
-            #if 'style_stats' in checkpoint:
-                #model.style_stats.load_state_dict(checkpoint['style_stats'], strict=False)
 
 
     def train_epoch(self, model: nn.Module, loader: DataLoader, 
@@ -292,8 +288,6 @@ class TrainingFramework:
             domain_pbar.set_description(f"Domain {domain_idx} ({domain_name})")
             self.current_domain = domain_idx + 1
         
-            #TODO sicher, dass die loader hier im loop initialisiert werden??
-            # DataLoader mit konsistenten Domain-Indizes
             train_loader = DataLoader(
                 train_data,
                 batch_size=hparams['batch_size'],
@@ -311,14 +305,13 @@ class TrainingFramework:
             )
 
             test_loader = DataLoader(
-                test_data,  # test_data ist bereits ein DomainSubset mit korrektem domain_idx
+                test_data,
                 batch_size=hparams['batch_size'],
                 shuffle=False,
                 pin_memory=True,
                 collate_fn=self.collate_fn
             )
-        
-            # Modell und Training (unverändert)
+
             model = self._init_model(hparams)
             optimizer, scheduler = self._init_optimizer_scheduler(model, hparams)
             criterion = nn.CrossEntropyLoss()
@@ -328,8 +321,7 @@ class TrainingFramework:
             epoch_train_losses, epoch_train_accs = [], []
             epoch_val_losses, epoch_val_accs = [], []
             epoch_test_losses, epoch_test_accs = [], []
-        
-            # Training Loop (unverändert)
+
             epoch_pbar = tqdm(range(self.config['num_epochs']), desc="Epochs", leave=False, position=1, bar_format='{l_bar}{bar}| Epoch {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]')
             for epoch in epoch_pbar:
                 train_loss, train_acc = self.train_epoch(model, train_loader, optimizer, criterion)
@@ -351,7 +343,7 @@ class TrainingFramework:
             
                 if scheduler:
                     if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                        scheduler.step(val_loss)  # For ReduceLROnPlateau, pass the metric to monitor
+                        scheduler.step(val_loss)
                     else:
                         scheduler.step()
             
@@ -499,7 +491,6 @@ class TrainingFramework:
         """Saves the training results to a JSON file"""
         result_path = os.path.join(self.config['save_dir'], 'lodo_results.json')
     
-        # Berechne average_val_acc aus den gespeicherten Werten
         avg_val_acc = results['avg_val_acc'] if 'avg_val_acc' in results else \
                      sum(results['all_val_acc']) / len(results['all_val_acc'])
 
@@ -534,7 +525,6 @@ def main():
         print(f"\n=== Starting training with seed {seed} ===")
         TrainingFramework.set_seeds(seed)
         
-        # Seed-spezifische Verzeichnisse erstellen
         seed_config = {
             **base_config,
             'seed': seed,
@@ -547,7 +537,6 @@ def main():
         os.makedirs(seed_config['save_dir'], exist_ok=True)
         os.makedirs(seed_config['vis_dir'], exist_ok=True)
 
-        # Dataset und Trainer initialisieren
         full_dataset = PACS(root=seed_config['data_root'], test_domain=None)
         #full_dataset = VLCS(root=seed_config['data_root'], test_domain=None)
         
@@ -558,9 +547,8 @@ def main():
             domain_names=DOMAIN_NAMES["PACS"]
         )
         
-        # Training durchführen
         results = trainer.run(args.hparam_file)
-        results['seed'] = seed  # Seed zu den Ergebnissen hinzufügen
+        results['seed'] = seed
         all_results.append(results)
         
         print(f"\n=== Seed {seed} Complete ===")
@@ -575,14 +563,12 @@ def main():
     test_stats = final_visualizer.calculate_test_statistics(all_results)
     final_visualizer.plot_accuracy_development(all_results, metric='test_acc')
 
-    # Gesamtstatistiken berechnen
     avg_acc = np.mean([r['avg_val_acc'] for r in all_results])
     std_acc = np.std([r['avg_val_acc'] for r in all_results])
     
     print("\n=== Final Results Across All Seeds ===")
     print(f"Mean Accuracy: {avg_acc:.2%} ± {std_acc:.2%}")
     
-    # Ergebnisse speichern
     final_results = {
         'base_config': base_config,
         'seeds': seeds,

@@ -116,7 +116,7 @@ class ResNet(nn.Module):
 
     def _register_hooks(self):
         self._remove_hooks()
-        self._feature_maps = {} #reset bei jedem forward pass #TODO will man das???
+        self._feature_maps = {} #reset bei jedem forward pass #TODO will man das??
 
         layers = [
             ('layer1', self.layer1[-1]),
@@ -145,7 +145,6 @@ class ResNet(nn.Module):
 
 
     def enable_style_stats(self, enable=True):
-        #Aktiviert/deaktiviert das Sammeln von Style Statistiken
         self.style_stats_enabled = enable
 
 
@@ -222,58 +221,31 @@ class ResNet(nn.Module):
         x = self.relu(x)
         x = self.maxpool(x)
 
-        #layer_outputs = []
-
         x = self.layer1(x)
-        #layer_outputs.append(x)
         if self.mixstyle is not None and 'layer1' in self.mixstyle_layers:
             x = self.mixstyle(x)
-        #self._update_style_stats(x, domain_idx, layer_idx=0)
-        #if self.mixstyle is not None and 'layer1' in self.mixstyle_layers:
-         #   x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=0)
 
         x = self.layer2(x)
-        #layer_outputs.append(x)
         if self.mixstyle is not None and 'layer2' in self.mixstyle_layers:
             x = self.mixstyle(x)
-        #self._update_style_stats(x, domain_idx, layer_idx=1)
-        #if self.mixstyle is not None and 'layer2' in self.mixstyle_layers:
-         #   x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=1)
 
         x = self.layer3(x)
-        #layer_outputs.append(x)
         if self.mixstyle is not None and 'layer3' in self.mixstyle_layers:
             x = self.mixstyle(x)
-        #self._update_style_stats(x, domain_idx, layer_idx=2)
-        #if self.mixstyle is not None and 'layer3' in self.mixstyle_layers:
-         #   x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=2)
 
         x = self.layer4(x)
-        #layer_outputs.append(x)
         if self.mixstyle is not None and 'layer4' in self.mixstyle_layers:
             x = self.mixstyle(x)
-        #self._update_style_stats(x, domain_idx, layer_idx=3) # noch nötig für Style Transfer?
-        #if self.mixstyle is not None and 'layer4' in self.mixstyle_layers:
-         #   x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=3)
 
         #x = self.avgpool(x)
         #x = torch.flatten(x, 1)
 
-        #if domain_idx is not None:
-         #   self._update_style_stats(domain_idx)
-
-        #return x, layer_outputs
         layer_outputs = [self._feature_maps.get(f'layer{i+1}') for i in range(4)]
         if domain_idx is not None and self.training:
             for i, features in enumerate(layer_outputs):
                 if features is not None:
                     self._update_style_stats(x=features, domain_idx=domain_idx, layer_idx=i)
-        """
-        x = self.avgpool(x)
-        x = x.view(x.size(0), -1)
-        if self.fc is not None:
-            x = self.fc(x)
-        """
+      
         return x, layer_outputs
 
     def forward(
@@ -283,64 +255,23 @@ class ResNet(nn.Module):
     ) -> Tensor:
         out, layer_outputs = self._feature_extractor(x, domain_idx)
 
-        """
-        if self.training and domain_idx is not None:
-            for layer_idx in range(4):  # Für alle relevanten Layers
-                self._update_style_stats(out, domain_idx, layer_idx)
-        
-        if domain_idx is not None: #and self.training
-            for layer_idx, features in enumerate(layer_outputs):
-                self._update_style_stats(features, domain_idx, layer_idx)
-        """
         out = self.avgpool(out)
         v = out.view(out.size(0), -1)
         if self.fc is not None:
             v = self.fc(v)
         y = self.classifier(v)
+
         return y
-    
-    #TODO ??
+
+
     def get_style_stats(self, domain_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        #Returns the style statistics of the model.
         return self.style_stats.get_style_stats(domain_idx)
     
     def _update_style_stats(self, x: torch.Tensor, domain_idx: torch.Tensor, layer_idx: int):
-        #Collects μ and σ for layers and domains.
+        # collects μ and σ for layers and domains
         if not (self.style_stats_enabled and self.training and domain_idx is not None):
             return
         
-        """
-        for layer_name, features in self._feature_maps.items():
-            if x.dim() != 4:
-                continue
-
-            layer_idx = int(layer_name[-1]) - 1
-        
-            #print(f"\nUpdating stats for Layer {layer_idx} | Input shape: {x.shape}")
-
-            mu = x.mean(dim=[2, 3], keepdim=True) # True)  # [B, C, 1, 1]
-            sig = x.std(dim=[2, 3], keepdim=True) #True)
-        
-            #print(f"Layer {layer_idx} - mu: {mu.min().item():.4f}-{mu.max().item():.4f} | "
-             #   f"sig: {sig.min().item():.4f}-{sig.max().item():.4f}")
-
-            if str(layer_idx) not in self.style_stats.mu_dict: #or
-                #self.style_stats.mu_dict[str(layer_idx)].shape[1] != mu.shape[1]):  # Channel-Dimension prüfen
-                self.style_stats._init_layer(layer_idx, mu.shape[1])
-
-            #if str(layer_idx) in self.style_stats.mu_dict:
-                #print(f"Existing stats - mu: {self.style_stats.mu_dict[str(layer_idx)].min().item():.4f}-"
-                 #   f"{self.style_stats.mu_dict[str(layer_idx)].max().item():.4f}")
-        
-            if isinstance(domain_idx, int):
-                domain_idx = torch.tensor([domain_idx], device=x.device)
-                #elf.style_stats._update(domain_idx, layer_idx, mu, sig)
-        
-            self.style_stats._update(domain_idx, layer_idx, mu, sig)
-            #print(f"Updated stats - mu: {self.style_stats.mu_dict[str(layer_idx)][domain_idx].min().item():.4f}-"
-             #   f"{self.style_stats.mu_dict[str(layer_idx)][domain_idx].max().item():.4f}")
-            #self.style_stats._batch_update(domain_idx, layer_idx, mu, sig)
-        """
         if x.dim() != 4:
             return
 
@@ -355,17 +286,6 @@ class ResNet(nn.Module):
         if isinstance(domain_idx, int):
             domain_idx = torch.tensor([domain_idx], device=x.device)
     
-        """
-        # Update für jede Domain im Batch
-        for domain in domain_idx.unique():
-            mask = (domain_idx == domain)
-            self.style_stats._batch_update(
-                domain.item(),  # Einzelner Index
-                layer_idx,
-                mu[mask],      # Nur Features dieser Domain
-                sig[mask]
-            )
-        """
         self.style_stats._batch_update(domain_idx, layer_idx, mu, sig)
 
     
@@ -404,21 +324,6 @@ class ResNet(nn.Module):
         """
         checkpoint = torch.load(path, map_location='cuda' if torch.cuda.is_available() else 'cpu')
         model = cls(**model_args)
-        
-        """
-        model_state_dict = model.state_dict()
-
-        pretrained_dict = {k: v for k, v in checkpoint['model_state_dict'].items() 
-                      if k in model_state_dict}
-
-        model_state_dict.update(pretrained_dict)
-        model.load_state_dict(model_state_dict)
-        
-        if 'style_stats' in checkpoint:
-            model.style_stats.load_state_dict(checkpoint['style_stats'], strict=False)
-            model.style_stats_config = checkpoint.get('style_stats_config', {})
-        """
-
         model.load_state_dict(checkpoint['model_state_dict'], strict=False)
     
         if not hasattr(model.style_stats, 'layer_counts'):

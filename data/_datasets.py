@@ -31,13 +31,10 @@ class DomainSubset(Subset):
     def __init__(self, dataset, indices, domain_idx=None, original_domain_indices=None):
         super().__init__(dataset, indices)
         self.indices = list(indices) if not isinstance(indices, list) else indices
-        #self.domain_idx = domain_idx
-        #self.original_domain_idx = original_domain_idx or domain_idx # neuer fix, evtl wieder entfernen
         self.original_domain_indices = original_domain_indices if original_domain_indices is not None else [domain_idx] * len(indices)
     
     def __getitem__(self, idx):
         img, label = super().__getitem__(idx)
-        #return img, label, self.domain_idx
         return img, label, self.original_domain_indices[idx]
 
 
@@ -219,16 +216,7 @@ class DomainDataset(MultiDomainDataset):
                 shuffle=False,
                 collate_fn=collate_fn,
             )
-        
-        """
-        test_data = DomainSubset(
-            self.data[self.test_domain],
-            indices=None,
-            domain_idx=len(train_domain_indices),  # Test domain gets the next index
-            original_domain_idx=test_domain_idx
-        )
-        """
-
+    
         return train_loader, val_loader, test_loader
 
     
@@ -251,14 +239,12 @@ class DomainDataset(MultiDomainDataset):
         train_subsets = []
         val_subsets = []
 
-        # 1. Hole originale Domain-Indizes außer test_domain
         train_domain_indices = [i for i in range(len(self.data)) if i != self.test_domain]
 
-        # 2. Baue Reindex-Mapping: alt_idx -> neuer Index (0 ... N-1)
+        # index remapping
         domain_idx_mapping = {old: new for new, old in enumerate(train_domain_indices)}
         self.train_domain_idx_mapping = domain_idx_mapping  # optional: merken für später
 
-        # 3. Iteriere über Trainingsdomains und wende neue Indizes an
         for old_domain_idx in train_domain_indices:
             dom = self.data[old_domain_idx]
             targets = dom.targets
@@ -282,14 +268,11 @@ class DomainDataset(MultiDomainDataset):
         splits = []
     
         for test_domain_idx in range(len(self.domains)):
-            # 1. Bestimme Trainingsdomains (alle außer test_domain_idx)
             train_domains = [i for i in range(len(self.domains)) if i != test_domain_idx]
-        
-            # 2. Erstelle Mapping: originaler Index -> neuer fortlaufender Index (0..N-1)
-            domain_idx_mapping = {orig_idx: new_idx for new_idx, orig_idx in enumerate(train_domains)}
-            test_domain_new_idx = len(train_domains)  # Test-Domain bekommt nächsten Index
 
-            # 3. Erstelle Train/Val-Subsets mit neuen Indizes
+            domain_idx_mapping = {orig_idx: new_idx for new_idx, orig_idx in enumerate(train_domains)}
+            test_domain_new_idx = len(train_domains)
+
             train_subsets, val_subsets = [], []
             for orig_domain_idx in train_domains:
                 domain_data = self.data[orig_domain_idx]
@@ -306,8 +289,6 @@ class DomainDataset(MultiDomainDataset):
                 train_original_domains = [orig_domain_idx] * len(train_idx)
                 val_original_domains = [orig_domain_idx] * len(val_idx)
             
-                # Wende neues domain_idx-Mapping an
-                #new_domain_idx = domain_idx_mapping[orig_domain_idx]
                 train_subsets.append(DomainSubset(
                     domain_data, 
                     train_idx, 
@@ -321,14 +302,11 @@ class DomainDataset(MultiDomainDataset):
                     original_domain_indices=val_original_domains
                 ))
 
-            # 4. Test-Domain mit konsistentem Index
-            test_data = []  # TODO hier war was, aber was?
+            test_data = []
             test_data.append(DomainSubset(
                 self.data[test_domain_idx],
                 indices=list(range(len(self.data[test_domain_idx]))),
-                #domain_idx=test_domain_new_idx,
                 domain_idx=len(train_domains),
-                #original_domain_idx=test_domain_idx
                 original_domain_indices=[test_domain_idx] * len(self.data[test_domain_idx])
             ))
 

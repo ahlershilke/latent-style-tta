@@ -18,21 +18,6 @@ This code was taken and modified from:
 # the downloading pacs + stage_path + download and extract functions (with slight modifications) are taken directly from:
 # https://github.com/facebookresearch/DomainBed/blob/main/domainbed/scripts/download.py
 
-"""
-def download_pacs(data_dir):
-    # Original URL: http://www.eecs.qmul.ac.uk/~dl307/project_iccv2017
-    if data_dir is None:
-        data_dir = os.getcwd()
-    
-    full_path = ask_for_download_location(os.path.join(data_dir, "PACS"))
-    
-    zip_path = os.path.join(os.path.dirname(full_path), "PACS.zip")
-    download_and_extract("https://drive.google.com/uc?id=1JFr8f805nMUelQWWmfnJR3y4_SYoN5Pd", # link is unfortunately obsolete
-                         zip_path)
-
-    kfold_path = os.path.join(os.path.dirname(full_path), "kfold")
-    join_paths(kfold_path, full_path)
-"""
 
 def download_pacs(data_dir):
     if data_dir is None:
