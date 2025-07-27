@@ -292,11 +292,19 @@ class StyleStatistics(nn.Module):
         
         elif self.mode == "selective":
             # averaging across selected layers
+            if not self.target_layer:
+                raise ValueError("No target layers specified for selective mode")
+
             mus, sigs = [], []
             
             for layer in self.target_layer:
                 layer_key = str(layer)
                 if layer_key in self.mu_dict:
+                    print(f"Layer {layer_key} mu stats - min: {self.mu_dict[layer_key][domain_idx].min().item()}, "
+                        f"max: {self.mu_dict[layer_key][domain_idx].max().item()}")
+                    print(f"Layer {layer_key} sig stats - min: {self.sig_dict[layer_key][domain_idx].min().item()}, "
+                        f"max: {self.sig_dict[layer_key][domain_idx].max().item()}")
+                    
                     mus.append(self.mu_dict[layer_key][domain_idx])
                     sigs.append(self.sig_dict[layer_key][domain_idx])
         
@@ -305,6 +313,7 @@ class StyleStatistics(nn.Module):
 
             #mu = [self.mu_dict[str(layer)][domain_idx] for layer in self.target_layer]
             #sig = [self.sig_dict[str(layer)][domain_idx] for layer in self.target_layer]
+            
 
         return mu.unsqueeze(-1).unsqueeze(-1), sig.unsqueeze(-1).unsqueeze(-1)
 
@@ -331,17 +340,20 @@ class StyleStatistics(nn.Module):
                 "mode": self.mode,
                 "num_domains": self.num_domains,
                 "domain_names": self.domain_names,
-                "target_layer": int(self.target_layer) if hasattr(self, 'target_layer') and self.mode != "average" else None,
+                #"target_layer": int(self.target_layer) if hasattr(self, 'target_layer') and self.mode != "average" else None,
+                "target_layer": (int(self.target_layer) if self.mode == "single"
+                                 else self.target_layer if self.mode == "selective"
+                                 else None),
                 "training_domains": [self.domain_names[i] for i in self.train_domains] if hasattr(self, 'train_domains') else "all"
             }
         }
 
         domains_to_save = self.train_domains if hasattr(self, 'train_domains') and self.train_domains is not None else range(self.num_domains)
-
+        """
         for domain_id in domains_to_save:
-            #if self.count[domain_id].item() == 0:
-                #print(f"Skipping domain {self.domain_names[domain_id]} - no data collected")
-                #continue
+            if self.count[domain_id].item() == 0:
+                print(f"Skipping domain {self.domain_names[domain_id]} - no data collected")
+                continue
             
             try:
                 mu, sig = self.get_style_stats(domain_id)
@@ -356,6 +368,39 @@ class StyleStatistics(nn.Module):
                 print(f"Error processing domain {self.domain_names[domain_id]}: {str(e)}")
                 continue
         
+        with open(filepath, "w") as f:
+            json.dump(stats_dict, f, indent=2)
+        """
+        for domain_id in domains_to_save:
+            if self.count[domain_id].item() == 0:
+                continue
+            
+            domain_data = {
+                "count": int(self.count[domain_id].item()),
+                "is_training_domain": domain_id in self.train_domains if hasattr(self, 'train_domains') else True
+            }
+
+            if self.mode == "selective":
+                # For selective mode, save each layer separately
+                for layer in self.target_layer:
+                    layer_key = str(layer)
+                    if layer_key in self.mu_dict:
+                        domain_data[f"layer_{layer}"] = {
+                            "mu": flatten_stats(self.mu_dict[layer_key][domain_id]),
+                            "sig": flatten_stats(self.sig_dict[layer_key][domain_id])
+                        }
+            else:
+                # For other modes, use the standard format
+                try:
+                    mu, sig = self.get_style_stats(domain_id)
+                    domain_data["mu"] = flatten_stats(mu)
+                    domain_data["sig"] = flatten_stats(sig)
+                except Exception as e:
+                    print(f"Error processing domain {self.domain_names[domain_id]}: {str(e)}")
+                    continue
+
+            stats_dict["domain_stats"][self.domain_names[domain_id]] = domain_data
+
         with open(filepath, "w") as f:
             json.dump(stats_dict, f, indent=2)
 
@@ -459,12 +504,12 @@ class StyleExtractorManager:
             'single_1': {'mode': 'single', 'config': {'target_layer': 1}},
             'single_2': {'mode': 'single', 'config': {'target_layer': 2}},
             'single_3': {'mode': 'single', 'config': {'target_layer': 3}},
-            #'selective_0_1': {'mode': 'selective', 'config': [0, 1]},
-            #'selective_0_2': {'mode': 'selective', 'config': [0, 2]},
-            #'selective_0_3': {'mode': 'selective', 'config': [0, 3]},
-            #'selective_1_2': {'mode': 'selective', 'config': [1, 2]},
-            #'selective_1_3': {'mode': 'selective', 'config': [1, 3]},
-            #'selective_2_3': {'mode': 'selective', 'config': [2, 3]},
+            'selective_0_1': {'mode': 'selective', 'config': [0, 1]},
+            'selective_0_2': {'mode': 'selective', 'config': [0, 2]},
+            'selective_0_3': {'mode': 'selective', 'config': [0, 3]},
+            'selective_1_2': {'mode': 'selective', 'config': [1, 2]},
+            'selective_1_3': {'mode': 'selective', 'config': [1, 3]},
+            'selective_2_3': {'mode': 'selective', 'config': [2, 3]},
             'average': {'mode': 'average', 'config': None}
         }
         
@@ -482,8 +527,10 @@ class StyleExtractorManager:
             # Spezielle Behandlung für single-Modus
             if mode == 'single':
                 kwargs = {'target_layer': int(layer_config['target_layer'])} # layer_config['target_layer']
-            else:
+            elif mode == 'selective':
                 kwargs = {'layer_config': layer_config}
+            else:
+                kwargs = {}
         
             extractors[name] = StyleStatistics(
                 num_domains=len(self.domain_names),
