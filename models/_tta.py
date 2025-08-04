@@ -4,18 +4,18 @@ import numpy as np
 import random
 import json
 import argparse
-from sklearn.metrics import accuracy_score
+#from sklearn.metrics import accuracy_score
 import torch.nn as nn
 import datetime
 from enum import Enum, auto
 from typing import Dict, List, Optional, Union, Tuple, Any
+from torch.utils.data import DataLoader
 import logging
 from torchmetrics import Accuracy
 from collections import defaultdict
 from ._styleextraction import StyleStatistics
 from ._resnet import resnet50
-from data._datasets import get_dataset
-from _styleextraction import StyleStatistics
+from data._datasets import get_dataset, DOMAIN_NAMES
 from utils._visualize import Visualizer
 
 
@@ -25,11 +25,12 @@ class AggregationStrategy(Enum):
     MAX_CONFIDENCE = auto()
     WEIGHTED_AVERAGE = auto()
 
+
 class FeatureAggregationStrategy(Enum):
     MEAN = auto()
     MAX = auto()
     CONCAT = auto()
-    #ATTENTION = auto()
+
 
 class SeedManager:
     def __init__(self, base_seed=42):
@@ -46,10 +47,12 @@ class SeedManager:
             torch.backends.cudnn.deterministic = True
             torch.backends.cudnn.benchmark = False
 
+
 class TTAClassifier(nn.Module):
     def __init__(self, 
                  model: nn.Module, 
-                 stats_path: Optional[str] = None, 
+                 stats_root_path: Optional[str] = None, 
+                 test_domain: str = None, 
                  device: str = 'cuda', 
                  num_classes: Optional[int] = None,
                  aggregation_strategy: AggregationStrategy = AggregationStrategy.AVERAGE,
@@ -57,10 +60,12 @@ class TTAClassifier(nn.Module):
                  verbose: bool = False,
                  seed: Optional[int] = None,
                  class_names: Optional[List[str]] = None,
-                 domain_names: Optional[List[str]] = None
+                 domain_names: Optional[List[str]] = None,
+                 mode: str = None,
+                 vis_dir: Optional[str] = None
                  ):
         """
-        Improved TTA Classifier with multiple enhancements.
+        TTA Classifier.
         
         Args:
             model: Pre-trained model with feature extractor and classifier
@@ -78,16 +83,24 @@ class TTAClassifier(nn.Module):
         self.feature_aggregation = feature_aggregation
         self.alpha = 0.5
         self.beta = torch.distributions.Beta(self.alpha, self.alpha)
-
-        self.seed_manager = SeedManager(seed if seed is not None else 42)
+        self.mode = mode
+        self.test_domain = test_domain
+        self.stats_root_path = stats_root_path
+        
+        self.seed = seed if seed is not None else 42
+        self.seed_manager = SeedManager(self.seed)
         self.seed_manager.set_seed()
+
+
+        #self.seed_manager = SeedManager(seed if seed is not None else 42)
+        #self.seed_manager.set_seed()
         
         if self.verbose:
             logging.basicConfig(level=logging.INFO)
             self.logger = logging.getLogger(__name__)
             self.logger.info("Initializing TTAClassifier with verbose logging")
 
-        # Freeze model and setup
+        # freeze model and setup
         self.model = model.to(device)
         for param in model.parameters():
             param.requires_grad = False
@@ -108,24 +121,31 @@ class TTAClassifier(nn.Module):
         
         # Initialize metrics
         self.accuracy = Accuracy(task='multiclass', num_classes=num_classes).to(device)
-        
-        # Load statistics if provided
-        self.style_stats = StyleStatistics(
-            num_domains=len(model.style_stats.domain_stats),  # Anzahl Domänen
-            num_layers=len(model.style_stats.layer_stats)#,    # Anzahl Layer
-            #mode="average"                                    # oder "selective"
-        )
 
         self.class_names = class_names if class_names else [f"Class_{i}" for i in range(num_classes)]
-        self.domain_names = domain_names if domain_names else ["Domain_0"]
+        self.domain_names = domain_names #if domain_names is not None else [f"domain_{i}" for i in range(4)]
+
+        self.style_stats = self._load_style_stats()
+
+        """
+        self.style_stats = StyleStatistics(
+            num_domains=len(model.style_stats.domain_names),  # Anzahl Domänen
+            num_layers=model.style_stats.num_layers,
+            domain_names=self.domain_names,
+            mode="average"#,     Anzahl Layer
+            #mode="average"                                    # oder "selective"
+        )
+        """
 
         self.visualizer = Visualizer(
             class_names=self.class_names,
-            domain_names=self.domain_names
+            domain_names=self.domain_names,
+            config={},
+            vis_dir=vis_dir
         )
         
-        if stats_path:
-            self.style_stats.load_state_dict(torch.load(stats_path))
+        #if stats_path:
+         #   self.style_stats.load_state_dict(torch.load(stats_path))
         
         # Hook for feature extraction
         self.features = {}
@@ -140,6 +160,46 @@ class TTAClassifier(nn.Module):
             self._init_domain_weights()
 
 
+        """
+        self.stats_path = os.path.join(
+            self.stats_root_path,
+            f"seed_{self.seed}",
+            "style_stats",
+            f"test_{self.test_domain}",
+            self.modus,
+            f"style_stats_{self.test_domain}_{self.modus}.pth"
+        )
+
+        if os.path.exists(self.stats_path):
+            self.style_stats.load_state_dict(torch.load(self.stats_path))
+        elif verbose:
+            print(f"Warning: Stats file not found at {self.stats_path}")
+        """
+
+
+    def _load_style_stats(self) -> Dict[str, Dict[str, torch.Tensor]]:
+        """Load style statistics for all training domains"""
+        stats_dict = {}
+        train_domains = [d for d in self.domain_names if d != self.test_domain]
+        
+        for domain in train_domains:
+            stats_path = os.path.join(
+                self.stats_root_path,
+                f"seed_{self.seed}",
+                "style_stats",
+                f"test_{self.test_domain}",
+                self.mode,
+                f"style_stats_{domain}_{self.mode}.pth"
+            )
+            
+            if os.path.exists(stats_path):
+                stats_dict[domain] = torch.load(stats_path, map_location=self.device)
+            elif self.verbose:
+                print(f"Warning: No stats found for domain {domain} at {stats_path}")
+        
+        return stats_dict
+
+
     def _load_stats(self, stats_path: str):
         """Load statistics with validation"""
         stats = torch.load(stats_path)
@@ -150,6 +210,30 @@ class TTAClassifier(nn.Module):
             self.logger.info(f"Loaded stats with {len(self.domain_stats)} domains and {len(self.layer_stats)} layers")
             for layer, domains in self.layer_stats.items():
                 self.logger.info(f"Layer {layer} has stats for domains: {list(domains.keys())}")
+
+    
+    def _load_stats_for_domain(self, target_domain: str) -> Optional[Dict[str, torch.Tensor]]:
+        """Load statistics for a specific target domain"""
+        stats_path = os.path.join(self.stats_root_path,
+                                  f"seed_{self.seed}",
+                                  "style_stats",
+                                  f"test_{self.test_domain}",
+                                  self.mode,
+                                  f"style_stats{target_domain}_{self.mode}.pth")
+
+        if not os.path.exists(stats_path):
+            if self.verbose:
+                print(f"Warning: Stats file not found at {stats_path}")
+            return None
+        
+        stats_dict = torch.load(stats_path, map_location=self.device)
+
+        if target_domain not in stats_dict:
+            if self.verbose:
+                print(f"Warning: No stats found for target domain {target_domain}")
+            return None
+        
+        return stats_dict[target_domain]
 
 
     def _init_domain_weights(self):
@@ -169,6 +253,9 @@ class TTAClassifier(nn.Module):
     def _register_hooks(self):
         """Register hooks to capture features at specific layers"""
         self.features = {}
+        self.hooks = []
+
+        """
         for layer_name in self.layer_stats.keys():
             try:
                 layer = dict([*self.feature_extractor.named_modules()])[layer_name]
@@ -183,6 +270,14 @@ class TTAClassifier(nn.Module):
             except KeyError:
                 if self.verbose:
                     self.logger.warning(f"Layer {layer_name} not found in model")
+        """
+        for name, module in self.model.named_modules():
+            if isinstance(module, nn.Conv2d):
+                def hook_factory(n):
+                    def hook(m, i, o):
+                        self.features[n] = o.detach()
+                    return hook
+                self.hooks.append(module.register_forward_hook(hook_factory(name)))
 
 
     def _get_feature_dim(self) -> int:
@@ -222,7 +317,7 @@ class TTAClassifier(nn.Module):
     def _augment_features(self, 
                           features: torch.Tensor, 
                           layer_idx: int, 
-                          target_domain: int) -> torch.Tensor:
+                          target_domain: str) -> torch.Tensor:
         """
         Apply cross-domain feature augmentation using pre-saved style statistics.
     
@@ -234,32 +329,53 @@ class TTAClassifier(nn.Module):
         Returns:
             Augmented features with cross-domain mixed statistics
         """
+        if target_domain not in self.style_stats:
+            return features
+        
+        #neu
+        domain_stats = self.style_stats[target_domain]
+
         B = features.size(0)
         device = features.device
     
         # 1. Compute current features statistics
         mu = features.mean(dim=[2, 3], keepdim=True)
         var = features.var(dim=[2, 3], keepdim=True)
-        sig = (var + self.eps).sqrt()
+        sig = (var + 1e-8).sqrt()
         mu, sig = mu.detach(), sig.detach()
     
         # 2. Normalize features
         features_normed = (features - mu) / sig
-    
+
+        """
         # 3. Load pre-saved statistics for target domain
-        stats_path = os.path.join(
-            "~/experiments/train_results/saved_models/style_stats", #TODO path womöglich nicht ganz richtig
-            f"test_{target_domain}.pth" #TODO pfad anpassen!
-        )
+        domain_stats = self._load_stats_for_domain(target_domain)
+        if domain_stats is None:
+            return features
+        """
+        
+        if self.mode.startswith('single'):
+            target_mu = domain_stats['mu'].to(device)
+            target_sig = domain_stats['sig'].to(device)
+        elif self.mode.startswith('selective'):
+            layer_key = f'layer_{layer_idx}_mu'
+            if layer_key not in domain_stats:
+                if self.verbose:
+                    print(f"Warning: No stats found for layer {layer_idx} in selective mode")
+                    return features
+            target_mu = domain_stats[layer_key].to(device)
+            target_sig = domain_stats[f'layer_{layer_idx}_sig'].to(device)
+        elif self.mode == "average":
+            target_mu = domain_stats['mu'].to(device)
+            target_sig = domain_stats['sig'].to(device)
+        else:
+            if self.verbose:
+                print(f"Warning: Unknown mode {self.mode}")
+            return features
     
-        domain_stats = torch.load(stats_path, map_location=device)
-    
-        # Get stats for current layer
-        #layer_stats = domain_stats[layer_idx] #TODO try this
-        #target_mu = layer_stats['mu'].to(device)
-        #target_sig = layer_stats['sig'].to(device)
-        target_mu = torch.from_numpy(domain_stats[layer_idx]['mu']).to(device)
-        target_sig = torch.from_numpy(domain_stats[layer_idx]['sig']).to(device)
+        if target_mu.dim() == 1:
+            target_mu = target_mu.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+            target_sig = target_sig.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
     
         # Ensure we have enough samples (repeat if necessary)
         if target_mu.size(0) < B:
@@ -329,12 +445,12 @@ class TTAClassifier(nn.Module):
         else:
             raise ValueError(f"Unknown aggregation strategy: {self.aggregation_strategy}")
 
-
+    """
     def predict(self, 
                dataloader: torch.utils.data.DataLoader, 
-               num_augments: int = 4,
+               num_augments: int = 3,
                return_uncertainty: bool = False) -> dict:
-        """
+        
         Perform feature-level TTA prediction with enhanced functionality.
         
         Args:
@@ -349,11 +465,9 @@ class TTAClassifier(nn.Module):
             - 'variance': Variance of softmax probabilities across augmentations
             - 'disagreement': Prediction disagreement (variation ratio)
             - 'per_sample_metrics': Dictionary with metrics for each sample
-        """
+        
         self.model.eval()
-        all_preds = []
-        all_labels = []
-        all_probs = []
+        all_preds, all_labels, all_probs = [], [], []
         uncertainties = []
 
         all_augmentation_probs = []  # To store probs from each augmentation
@@ -362,7 +476,7 @@ class TTAClassifier(nn.Module):
             'disagreement': []
         }
         
-        available_domains = list({d for layer in self.layer_stats.values() for d in layer.keys()})
+        available_domains = [d for d in self.domain_names if d != self.test_domain]
         
         if self.verbose:
             self.logger.info(f"Starting prediction with available domains: {available_domains}")
@@ -392,7 +506,7 @@ class TTAClassifier(nn.Module):
 
                     augmented_features = {}
                     for layer_name, orig_features in self.features.items():
-                        augmented = self._augment_features(orig_features, layer_name, domain=domain)
+                        augmented = self._augment_features(orig_features, layer_name, target_domain=domain)
                         augmented_features[layer_name] = augmented
 
                     # Aggregate features from multiple layers
@@ -458,12 +572,175 @@ class TTAClassifier(nn.Module):
         }
     
         return results
+        """
     
+
+    def predict(self, dataloader: torch.utils.data.DataLoader, num_augments: int = 3, return_uncertainty: bool = False) -> dict:
+        """
+        Perform feature-level TTA prediction with enhanced functionality.
+    
+        Args:
+            dataloader: DataLoader with test data
+            num_augments: Number of augmentations per sample
+            return_uncertainty: Whether to return uncertainty estimates
+        
+        Returns:
+            dict: Dictionary containing:
+            - 'accuracy': Overall accuracy
+            - 'all_probs': All class probabilities
+            - 'variance': Variance of softmax probabilities across augmentations
+            - 'disagreement': Prediction disagreement (variation ratio)
+            - 'per_sample_metrics': Dictionary with metrics for each sample
+            - 'test_domain': Current test domain name
+            - 'augmentation_domains': List of domains used for augmentation
+            - 'mode': Style statistics mode used
+        """
+
+        #test_loader = ...  # Ihr DataLoader
+        #first_batch = next(iter(test_loader))
+        #print(f"Number of elements in batch: {len(first_batch)}")
+        #print(f"Shapes/types: {[type(x) for x in first_batch]}")
+
+        self.model.eval()
+        all_preds, all_labels, all_probs = [], [], []
+        all_augmentation_probs = []
+        per_sample_metrics = {'variance': [], 'disagreement': []}
+    
+        available_domains = [d for d in self.domain_names if d != self.test_domain]
+    
+        # Register hooks for feature extraction
+        """features = {}
+        hooks = []
+        for name, module in self.model.named_modules():
+            if isinstance(module, nn.Conv2d):
+                def hook_factory(n):
+                    def hook(m, i, o):
+                        features[n] = o.detach()
+                    return hook
+                hooks.append(module.register_forward_hook(hook_factory(name)))
+        """
+                
+        try:
+            with torch.no_grad():
+                for batch in dataloader:
+                    print(f"Number of elements in batch: {len(batch)}")
+                    print(f"Shapes/types: {[type(x) for x in batch]}")
+                    images = batch[0].to(self.device)
+                    labels = batch[1] if len(batch) > 1 else None
+                    _ = batch[2] if len(batch) > 2 else None
+                    batch_probs = []
+                    augmentation_probs = []
+
+                    # Original prediction
+                    _ = self.model(images)  # Populates features dict
+                    #orig_logits = self.model.classifier(features[list(features.keys())[-1]])
+                    #orig_probs = self.softmax(orig_logits)
+                    #batch_probs.append(orig_probs)
+                    #augmentation_probs.append(orig_probs.cpu().numpy())
+                    layer_features = [
+                        self.model._feature_maps[f"Layer{i+1}"]
+                        for i in range(4)
+                        if f"layer{i+1}" in self.model._feature_maps
+                    ]
+
+                    # Augmented predictions
+                    for domain in available_domains:
+                        try:
+                            augmented_features = []
+                            #for layer_name, feat in features.items():
+                            for layer_name, feat in enumerate(layer_features):
+                                augmented = self._augment_features(feat, layer_name, domain)
+                                #augmented_features[layer_name] = augmented
+                                augmented_features.append(augmented)
+
+                            # Use last layer features for prediction
+                            #aug_logits = self.model.classifier(augmented_features[list(augmented_features.keys())[-1]])
+                            combined = torch.mean(torch.stack(augmented_features), dim=0)
+                            aug_logits = self.model.classifier(combined)
+                            aug_probs = self.softmax(aug_logits)
+                        
+                            batch_probs.append(aug_probs)
+                            augmentation_probs.append(aug_probs.cpu().numpy())
+                    
+                        except Exception as e:
+                            if self.verbose:
+                                print(f"Skipping domain {domain} due to error: {str(e)}")
+                            continue
+
+                    # Calculate metrics
+                    all_augmentation_probs.append(np.stack(augmentation_probs))
+                    batch_variance = np.var(np.stack(augmentation_probs), axis=0).mean(axis=1)
+                    per_sample_metrics['variance'].append(batch_variance)
+                
+                    batch_preds = np.argmax(np.stack(augmentation_probs), axis=2)
+                    mode_counts = np.array([np.bincount(batch_preds[:,i]).max() for i in range(batch_preds.shape[1])])
+                    batch_disagreement = 1 - mode_counts / len(augmentation_probs)
+                    per_sample_metrics['disagreement'].append(batch_disagreement)
+
+                    # Aggregate predictions
+                    avg_probs = self._aggregate_predictions(batch_probs)
+                    preds = torch.argmax(avg_probs, dim=1)
+                
+                    all_probs.append(avg_probs.cpu().numpy())
+                    all_preds.append(preds.cpu().numpy())
+                
+                    if labels is not None:
+                        all_labels.append(labels.numpy())
+                        self.accuracy.update(preds, torch.tensor(labels, device=self.device))
+
+        finally:
+            # Remove hooks
+            #for h in hooks:
+             #   h.remove()
+             print("done")
+
+        # Prepare results
+        results = {
+            'accuracy': self.accuracy.compute().item() if len(all_labels) > 0 else None,
+            'all_probs': np.concatenate(all_probs, axis=0) if len(all_probs) > 0 else None,
+            'test_domain': self.test_domain,
+            'augmentation_domains': available_domains,
+            'mode': self.mode,
+            'seed': self.seed
+        }
+
+        if return_uncertainty:
+            all_aug_probs = np.concatenate(all_augmentation_probs, axis=1) if len(all_augmentation_probs) > 0 else None
+            results.update({
+                'variance': np.mean(np.var(all_aug_probs, axis=0), axis=1) if all_aug_probs is not None else None,
+                'disagreement': 1 - (np.array([np.bincount(all_aug_probs[:,i]).max() 
+                                             for i in range(all_aug_probs.shape[1])]) / all_aug_probs.shape[0]) 
+                                             if all_aug_probs is not None else None,
+                'per_sample_metrics': {
+                    'variance': np.concatenate(per_sample_metrics['variance']) if per_sample_metrics['variance'] else None,
+                    'disagreement': np.concatenate(per_sample_metrics['disagreement']) 
+                                    if per_sample_metrics['disagreement'] else None
+                }
+            })
+    
+        return results
+
 
 class TTAExperiment:
     def __init__(self, config):
         self.config = config
         self.seed_manager = SeedManager()
+        self.domain_names = DOMAIN_NAMES['PACS']
+
+        self.all_results = defaultdict(lambda: defaultdict(dict))
+
+        os.makedirs(config['output_dir'], exist_ok=True)
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.results_file = os.path.join(
+            config['output_dir'],
+            f"tta_results_all_domains_{timestamp}.txt"
+        )
+
+        """
+        self.stats_root_path = config['stats_root_path']
+        self.test_domain = config['test_domain']
+        self.modus = config['modus']
 
         _, self.test_loader = get_dataset(
             name=self.config['dataset_name'],
@@ -473,6 +750,8 @@ class TTAExperiment:
 
         self.class_names = self._get_class_names()
         self.domain_names = self._get_domain_names()
+        """
+
 
     def _get_class_names(self) -> List[str]:
         """Extrahiere Klassennamen aus dem Dataset"""
@@ -480,63 +759,345 @@ class TTAExperiment:
             return self.test_loader.dataset.classes
         except AttributeError:
             return [f"Class_{i}" for i in range(self.config['num_classes'])]
+        
+    @staticmethod
+    def generate_mode_variants(domain_names, base_mode):
+        """Generiert alle Varianten für einen gegebenen Modus"""
+        variants = []
+        num_domains = len(domain_names)
+    
+        if base_mode == 'single':
+            variants = [f'single_{i}' for i in range(num_domains)]
+        elif base_mode == 'selective':
+            # Alle möglichen Domain-Kombinationen (ohne Wiederholung und Reihenfolge)
+            variants = [f'selective_{i}_{j}' for i in range(num_domains) 
+                       for j in range(i+1, num_domains)]
+        elif base_mode == 'average':
+            variants = ['average']
+    
+        return variants
 
-    def _get_domain_names(self) -> List[str]:
-        """Extrahiere Domänennamen basierend auf dem Dataset"""
-        # Hier können Sie domänenspezifische Logik implementieren
-        if hasattr(self.test_loader.dataset, 'domain_names'):
-            return self.test_loader.dataset.domain_names
-        return [f"Domain_{i}" for i in range(len(self.config['target_domains']))]
+    
+    def run_all_domains(self):
+        #Applies TTA for all domains as test domains #whack
+        with open(self.results_file, 'w') as f:
+            f.write("TTA Experiment Results - All Domains\n")
+            f.write("="*50 + "\n\n")
 
-    def run_single_seed(self, seed):
+            domain_results = {domain: {} for domain in self.domain_names}
+
+            for test_domain in self.domain_names:
+                f.write(f"\n\n=== TEST DOMAIN: {test_domain.upper()} ===\n")
+                self.config['test_domain'] = test_domain
+
+                target_domains = [d for d in self.domain_names if d != test_domain]
+                self.config['target_domains'] = target_domains
+                
+                for base_mode in self.config['modes']:
+                    mode_variants = TTAExperiment.generate_mode_variants(self.domain_names, base_mode)           
+
+                    for mode in mode_variants:
+                        f.write(f"\nMode: {mode.upper()}\n")
+                        self.config['mode'] = mode
+
+                        for seed in self.config['seeds']:
+                            f.write(f"\nSeed: {seed}\n")
+                            f.write("-"*30 + "\n")
+
+                            try:
+                                seed_results = self.run_single_seed(seed, test_domain)
+                            
+                                for target_domain, metrics in seed_results.items():
+                                    f.write(f"Target {target_domain}:\n")
+                                    f.write(f"  Accuracy: {metrics['accuracy']:.4f}\n")
+                                    f.write(f"  Variance: {metrics['variance'].mean():.4f}\n")
+                                    f.write(f"  Disagreement: {metrics['disagreement'].mean():.4f}\n")
+                                self.all_results[test_domain][mode][seed] = seed_results
+                            except Exception as e:
+                                #f.write(f"Error for mode {mode}, seed {seed}: {str(e)}\n")
+                                import traceback
+                                error_msg = f"Error for mode {mode}, seed {seed}:\n{str(e)}\n{traceback.format_exc()}"
+                                f.write(error_msg + "\n")
+                                print(error_msg)
+                                if self.config['verbose']:
+                                    print(f"Error occurred for mode {mode}, seed {seed}:")
+                                    print(str(e))
+
+        json_file = self.results_file.replace('.txt', '.json')
+        with open(json_file, 'w') as f:
+            json.dump(self.all_results, f, indent=2)
+
+        return self.all_results
+    
+    """
+    def run_all_domains(self):
+        #Applies TTA for all domains as test domains with combined functionality
+        # Prepare both text and JSON outputs
+        with open(self.results_file, 'w') as txt_f, \
+             open(self.results_file.replace('.txt', '.json'), 'w') as json_f:
+        
+            # Write text header
+            txt_f.write("TTA Experiment Results - All Domains\n")
+            txt_f.write("="*50 + "\n\n")
+        
+            all_modi = ['average', 'selective'] + [f'single_{i}' for i in range(4)]
+
+            for test_domain in self.domain_names:
+                txt_f.write(f"\n\n=== TEST DOMAIN: {test_domain.upper()} ===\n")
+                self.config['test_domain'] = test_domain
+                self.config['target_domains'] = [d for d in self.domain_names if d != test_domain]
+
+                for mode in all_modi:
+                    txt_f.write(f"\nMode: {mode.upper()}\n")
+                    self.config['mode'] = mode
+
+                    for seed in self.config['seeds']:
+                        txt_f.write(f"\nSeed: {seed}\n")
+                        txt_f.write("-"*30 + "\n")
+
+                        try:
+                            # This now uses the improved predict() method
+                            results = self.run_single_config(test_domain, mode, seed)
+                            self.all_results[test_domain][mode][seed] = results
+                        
+                            # Write to text file in your preferred format
+                            txt_f.write(f"Results:\n")
+                            txt_f.write(f"  Accuracy: {results['accuracy']:.4f}\n")
+                        
+                            if 'variance' in results:
+                                txt_f.write(f"  Avg Variance: {np.mean(results['variance']):.4f}\n")
+                                txt_f.write(f"  Avg Disagreement: {np.mean(results['disagreement']):.4f}\n")
+
+                            txt_f.write(f"  Augmentation Domains: {results.get('augmentation_domains', [])}\n")
+
+                        except Exception as e:
+                            error_msg = f"Error for mode {mode}, seed {seed}: {str(e)}"
+                            txt_f.write(error_msg + "\n")
+                            if self.config['verbose']:
+                                print(error_msg)
+                            continue
+
+            # Save complete results to JSON
+            json.dump(self.all_results, json_f, indent=2)
+
+        return self.all_results
+
+    def run_single_config(self, test_domain: str, mode: str, seed: int) -> dict:
+        Improved version that works with your predict() method
+        self.seed_manager.set_seed(seed)
+    
+        # Load model (unchanged from your original)
+        model_path = os.path.join(
+            self.config['models_root_path'],
+            f"seed_{seed}",
+            f"best_fold_{test_domain}.pt"
+        )
+    
+        model = resnet50(
+            pretrained=False,
+            num_classes=self.config['num_classes'],
+            num_domains=len(self.domain_names),
+            domain_names=self.domain_names,
+            use_mixstyle=False
+        ).to(self.config['device'])
+    
+        checkpoint = torch.load(model_path, map_location=self.config['device'])
+        model.load_state_dict(checkpoint['model_state_dict'])
+    
+        # Get test loader
+        _, _, test_loader = get_dataset(
+            name=self.config['dataset_name'],
+            root_dir=self.config['data_dir'],
+            test_domain=test_domain
+        )
+    
+        # Initialize TTA classifier with your predict() method
+        tta = TTAClassifier(
+            model=model,
+            stats_root_path=self.config['models_root_path'],
+            test_domain=test_domain,
+            device=self.config['device'],
+            num_classes=self.config['num_classes'],
+            mode=mode,
+            seed=seed,
+            class_names=test_loader.dataset.classes,
+            domain_names=self.domain_names,
+            vis_dir=self.config['output_dir']
+        )
+    
+        # Returns results in your structure
+        return tta.predict(test_loader, return_uncertainty=True)
+    """
+
+
+    def run_single_seed(self, seed, test_domain):
         """Run full pipeline for one seed"""
         self.seed_manager.set_seed(seed)
 
-        model = resnet50(pretrained=True, num_classes=self.config['num_classes']).to(self.config['device'])
+        #model = resnet50(pretrained=True, num_classes=self.config['num_classes']).to(self.config['device'])
+        model_path = os.path.join(
+            self.config['models_root_path'],
+            f"seed_{seed}",
+            f"best_fold_{test_domain}.pt"
+        )
+
+        checkpoint = torch.load(model_path, map_location=self.config['device'])
+
+        #resnet hier pretrained=False oder pretrained=True??
+        model = resnet50(
+            pretrained=False, 
+            num_classes=self.config['num_classes'], 
+            #num_domains=len(DOMAIN_NAMES[self.config['dataset']]),
+            num_domains=len(self.domain_names),
+            domain_names=self.domain_names,
+            use_mixstyle=False
+            ).to(self.config['device'])
+        #model.load_state_dict(torch.load(model_path))
+        #model = model.to(self.config['device'])
+        #model.load_state_dict(checkpoint['model_state_dict'])
+        model_state_dict = checkpoint['model_state_dict']
+        style_stats_state = checkpoint['style_stats']
+
+        converted_state_dict = {}
+        for k, v in model_state_dict.items():
+            if k.startswith('mixstyle.'):
+                new_key = k.replace('mixstyle.style_stats.', 'style_stats.')
+                converted_state_dict[new_key] = v
+            else:
+                converted_state_dict[k] = v
+
+        model.load_state_dict(converted_state_dict, strict=False)
+
+        if 'style_stats' in checkpoint:
+            style_stats = checkpoint['style_stats']
+            converted_style_stats = {}
+            for k, v in style_stats.items():
+                new_key = k.replace('mixstyle.style_stats.', 'style_stats')
+                converted_style_stats[new_key] = v
+            model.style_stats.load_state_dict(converted_style_stats, strict=False)
+
+        print(f"\nInitializing run for seed {seed}, test domain {test_domain}")
+        print(f"test domain {test_domain}")
+
+        
+        try:
+            test_domain_idx = self.domain_names.index(test_domain)
+        except ValueError:
+            available = ", ".join(self.domain_names)
+            raise ValueError(f"Unknown test domain '{test_domain}'. Available: {available}")
+        
+
+        # 3. Dataset und Loader erstellen
+        try:
+            dataset = get_dataset(
+                name=self.config['dataset_name'],
+                root_dir=self.config['data_dir'],
+                test_domain=test_domain_idx  # Hier den Index übergeben
+            )
+
+            #_, _, test_dataset = dataset.generate_lodo_splits()
+
+            splits = dataset.generate_lodo_splits()
+            _, _, test_dataset = splits[test_domain_idx]
+
+            test_loader = DataLoader(
+                test_dataset,
+                batch_size=8,
+                shuffle=False,
+                collate_fn=lambda b: (
+                    torch.stack([x[0] for x in b]),  # images
+                    torch.tensor([x[1] for x in b]),  # labels
+                    torch.tensor([x[2] for x in b]) if len(b[0]) > 2 else None  # domains
+                )
+            )
+
+            # Batch mit Index 5 anzeigen
+            #batch_idx = 5
+            #specific_batch = list(test_loader)[batch_idx]
+            #print(f"Batch {batch_idx}: {specific_batch}")
+
+            if test_loader is None:
+                raise ValueError("test_loader is None! Überprüfen Sie self.test_domain in generate_loaders().")
+            print("Test loader exists:", test_loader is not None)
+            print("Successfully created test loader")
+        except Exception as e:
+            print(f"Error creating dataset/loader: {str(e)}")
+            raise
+
+        """
+        # 4. Batch testen
+        try:
+            print("vor first batch")
+            print("Test loader exists vor first batch:", test_loader is not None)
+            print("Anzahl der Batches im Test-Loader:", len(test_loader))
+            first_batch = next(iter(test_loader))
+            for batch in first_batch:
+                print("Got batch")
+                print("Type:", type(batch))
+                print("Len:", len(batch))
+                for i, b in enumerate(batch):
+                    print(f"Batch[{i}]:", type(b), getattr(b, 'shape', b))
+                break
+            #images, labels, domains = first_batch  # Annahme: 3-elementiger Tuple
+            
+            images, labels = first_batch
+            # Shapes anzeigen
+            print("Images shape:", images.shape)  # Sollte [Batch, Channels, H, W] sein (z.B. [32, 3, 224, 224])
+            print("Labels shape:", labels.shape)  # Sollte [Batch] (z.B. [32])
+            #print("Domains shape:", domains.shape)
+
+            print("nach first batch")
+            print(f"Batch contains {len(first_batch)} elements")
+            if len(first_batch) >= 2:
+                print(f"First element shape: {first_batch[0].shape}")
+                print(f"Second element shape: {first_batch[1].shape}")
+            if len(first_batch) >= 3:
+                print(f"First element shape: {first_batch[0].shape}")
+                print(f"Second element shape: {first_batch[1].shape}")
+                print(f"Third element type: {type(first_batch[2])}")
+            
+        except Exception as e:
+            print(f"Error checking first batch: {str(e)}")
+            raise
+        """
+        
 
         tta = TTAClassifier(
             model=model,
-            stats_path=self.config['stats_path'],
+            stats_root_path=self.config['models_root_path'],
+            test_domain=test_domain,
+            mode=self.config['mode'],
             device=self.config['device'],
             num_classes=self.config['num_classes'],
             verbose=self.config['verbose'],
             seed=seed,
-            class_names=self.class_names,  # Übergebe Klassennamen
-            domain_names=self.domain_names
+            class_names=self._get_class_names(),  # Übergebe Klassennamen
+            domain_names=self.domain_names,
+            vis_dir=self.config['output_dir']
         )
-
-        """
-        _, test_loader = get_dataset(
-            name=self.config['dataset_name'],
-            root_dir=self.config['data_dir'],
-            test_domain=self.config['test_domain']
-        )
-        """
 
         results = {}
-        for target_domain in self.config['target_domains']:
+        target_domains = [d for d in self.domain_names if d != test_domain]
+
+        for target_domain in target_domains:
             if self.config['verbose']:
-                print(f"Seed {seed} | Target domain {target_domain}")
+                print(f"Test Domain: {test_domain} | Seed {seed} | Mode {self.config['mode']} | Target Domain {target_domain}")
             
             results[target_domain] = tta.predict(
-                self.test_loader,
+                test_loader,
                 num_augments=self.config['num_augments']
             )
+
+        self.all_results[test_domain][self.config['mode']][seed] = results
         
         return results
     
+
     def run_multiple_seeds(self):
         "Main method to run across all seeds"
-        all_results = {}
-
-        for seed in self.config['seeds']:
-            all_results[seed] = self.run_single_seed(seed)
-
-        final_results = {}
-        self.save_results(final_results)
-
-        return final_results
+        return self.run_all_domains()
     
+
     def aggregate_results(self, results):
         """Calculate statistics across seeds"""
         aggregated = {}
@@ -568,29 +1129,25 @@ def parse_args() -> Dict[str, Any]:
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description='TTA Experiment Pipeline')
     
-    # Dataset parameters
-    parser.add_argument('--dataset', type=str, default='PACS', help='Dataset name')
-    parser.add_argument('--data_dir', type=str, default='./data', help='Root directory for data')
-    parser.add_argument('--test_domain', type=int, default=1, help='Test domain index')
-    parser.add_argument('--target_domains', nargs='+', type=int, default=[0, 2, 3], 
-                       help='List of target domains for style transfer')
-    
-    # Model parameters
-    parser.add_argument('--num_classes', type=int, default=7, help='Number of classes')
-    parser.add_argument('--stats_path', type=str, default='style_stats.pth', 
-                       help='Path to style statistics file')
+    # Basic paths
+    parser.add_argument('--models_root_path', type=str, default='./experiments/train_results/test/saved_models', 
+                        help='Root path to trained models (contains seed_X folders)')
+    parser.add_argument('--data_dir', type=str, default='/mnt/data/hahlers/datasets', 
+                        help='Root directory for dataset')
+    parser.add_argument('--dataset', type=str, default='PACS', 
+                        help='Dataset name: PACS, VLCS')
+    parser.add_argument('--num_classes', type=int, default=7,
+                        help='Number of classes for used Dataset; PACS: 7, VLCS: 5')
     
     # Experiment parameters
     parser.add_argument('--num_augments', type=int, default=3, 
                        help='Number of augmentations per sample')
+    parser.add_argument('--modes', nargs='+', type=str, default=['single', 'selective', 'average'],
+                        help='Modes to run: single, selective, average')
     parser.add_argument('--seeds', nargs='+', type=int, default=[42, 7, 0],
                        help='Random seeds to run')
-    parser.add_argument('--num_workers', type=int, default=4, 
-                       help='Number of workers for data loading')
-    
-    # Output control
-    parser.add_argument('--output_dir', type=str, default='./results', 
-                       help='Output directory for results')
+    parser.add_argument('--output_dir', type=str, default='./experiments/test_results', 
+                        help='Output directory for results')
     parser.add_argument('--verbose', action='store_true', 
                        help='Enable verbose logging')
     
@@ -598,18 +1155,20 @@ def parse_args() -> Dict[str, Any]:
     
     return {
         'device': "cuda" if torch.cuda.is_available() else "cpu",
+        'dataset': args.dataset,
         'dataset_name': args.dataset,
         'data_dir': args.data_dir,
-        'test_domain': args.test_domain,
-        'target_domains': args.target_domains,
-        'num_classes': args.num_classes,
-        'stats_path': args.stats_path,
+        'models_root_path': args.models_root_path,
+        'stats_root_path': args.models_root_path,
+        'data_dir': args.data_dir,
         'num_augments': args.num_augments,
         'seeds': args.seeds,
         'output_dir': args.output_dir,
         'verbose': args.verbose,
-        'num_workers': args.num_workers
+        'num_classes': args.num_classes,
+        'modes': args.modes
     }
+
 
 def main():
     config = parse_args()
@@ -617,12 +1176,14 @@ def main():
     experiment = TTAExperiment(config)
     final_results = experiment.run_multiple_seeds()
     
-    # Print summary
     print("\n=== Final Results Across Seeds ===")
-    for domain, metrics in final_results.items():
-        print(f"Domain {domain}: {metrics['mean_accuracy']:.2%} ± {metrics['std_accuracy']:.2%}")
-        print(f"   Range: {metrics['min']:.2%} - {metrics['max']:.2%}")
-        print(f"   All values: {[f'{x:.2%}' for x in metrics['all_accuracies']]}")
+    for test_domain, mode_results in final_results.items():
+        for mode, seed_results in mode_results.items():
+            for seed, domain_results in seed_results.items():
+                print(f"Test Domain: {test_domain} | Mode: {mode} | Seed {seed}")
+                for domain, metrics in domain_results.items():
+                    print(f"   Target domain: {domain}: Accuracy={metrics['accuracy']:.4%}")
+
 
 if __name__ == "__main__":
     main()

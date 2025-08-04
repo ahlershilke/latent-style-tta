@@ -111,7 +111,7 @@ class TrainingFramework:
             #num_domains=len(DOMAIN_NAMES['VLCS']),
             domain_names=self.domain_names,
             batch_size=hparams['batch_size'],
-            use_mixstyle=True,
+            use_mixstyle=False,
             dropout_p=hparams['dropout'],
             pretrained=True
         )
@@ -385,7 +385,6 @@ class TrainingFramework:
             all_pred_labels.extend(test_preds)
             all_domains.extend(test_domains)
 
-            """
             loaders_dict = {
                 domain_name: DataLoader(
                     DomainSubset(test_data, indices=range(len(test_data)), domain_idx=idx),
@@ -395,7 +394,7 @@ class TrainingFramework:
                 for idx, (domain_name, test_data) in enumerate(zip(self.domain_names, test_data))
             }
             
-
+            """
             dl = DataLoader(
                 dataset=self.full_dataset,
                 batch_size=64,
@@ -423,14 +422,14 @@ class TrainingFramework:
                 num_examples=5,
                 target_layer=None  # will auto-detect last conv layer
             )
-            self.visualizer._visualize_umap_embeddings(
-                model=model,
-                loader=test_loader,  # oder DataLoader(self.full_dataset)
-                domain_name=domain_name,
-                n_samples=500
-            )
-            self.visualizer._visualize_raw_umap(loader=test_loader, domain_name=domain_name)
-            """        
+            #self.visualizer._visualize_umap_embeddings(
+             #   model=model,
+              #  loader=test_loader,  # oder DataLoader(self.full_dataset)
+               # domain_name=domain_name,
+                #n_samples=500
+            #)
+            #self.visualizer._visualize_raw_umap(loader=test_loader, domain_name=domain_name)
+            """
     
         results['avg_val_acc'] = np.mean(results['all_val_acc'])
         results['avg_train_loss'] = np.mean(results['all_train_loss'])
@@ -459,18 +458,27 @@ class TrainingFramework:
         """Save the model state dictionary"""
         save_path = os.path.join(self.config['save_dir'], filename)
         
+        if not hasattr(model.style_stats, 'layer_counts'):
+            model.style_stats.register_buffer('layer_counts', 
+                                              torch.zeros(4, 4, dtype=torch.long))
+        elif model.style_stats.layer_counts.shape[1] == 0:
+            model.style_stats.layer_counts = torch.zeros(4, 4, dtype=torch.long)
+
         model_state_dict = {
             k: v for k, v in model.state_dict().items() 
             if not k.startswith('style_stats.')
         }
 
-        style_stats_state = model.style_stats.state_dict()
-        for layer in range(4):
-            layer_key = str(layer)
-            if layer_key in model.style_stats.mu_dict:
-                print(f"Layer {layer} mu stats - min: {model.style_stats.mu_dict[layer_key].min().item():.4f}, "
-                      f"max: {model.style_stats.mu_dict[layer_key].max().item():.4f}")
+        #style_stats_state = model.style_stats.state_dict()
 
+        style_stats_state = {
+            'mu_dict': {k: v.clone() for k, v in model.style_stats.mu_dict.items()},
+            'sig_dict': {k: v.clone() for k, v in model.style_stats.sig_dict.items()},
+            'layer_counts': model.style_stats.layer_counts.clone(),
+            'count': model.style_stats.count.clone()
+        }
+
+        """
         torch.save({
             'model_state_dict': model_state_dict,
             #'style_stats': model.style_stats.state_dict(),
@@ -485,6 +493,32 @@ class TrainingFramework:
             'git_hash': subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip(),
             'timestamp': datetime.now().isoformat()
         }, save_path)
+        """
+
+        checkpoint = {
+            'model_state_dict': model_state_dict,
+            'style_stats': style_stats_state,
+            'style_stats_config': model.style_stats_config,
+            'metadata': {
+                'fold': self.current_domain,
+                'config': self.config,
+                'target_layer': model.style_stats.target_layer,
+                'num_domains': model.style_stats.num_domains,
+                'num_layers': model.style_stats.num_layers,  # Wichtig fürs Laden
+                'domain_names': model.style_stats.domain_names
+            },
+            'version': '1.1',  # Für zukünftige Kompatibilität
+            'git_hash': subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip(),
+            'timestamp': datetime.now().isoformat()
+        }
+
+        # 5. Finale Validierung vor dem Speichern
+        assert checkpoint['style_stats']['layer_counts'].shape == (
+            model.style_stats.num_domains,
+            model.style_stats.num_layers
+        ), f"Invalid layer_counts shape: {checkpoint['style_stats']['layer_counts'].shape}"
+
+        torch.save(checkpoint, save_path)
 
     
     def _save_results(self, results: Dict):

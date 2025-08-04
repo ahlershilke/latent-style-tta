@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch import Tensor
 from typing import List, Type
 from torch.utils import model_zoo
+from torch.nn import functional as F
 from ._mixstyle import MixStyle
 from ._styleextraction import StyleStatistics, StyleExtractorManager
 from typing import Tuple
@@ -42,7 +43,7 @@ class ResNet(nn.Module):
             fc_dims=None,
             dropout_p=None,
             style_stats_config: dict = None,
-            use_mixstyle=True,
+            use_mixstyle=False,
             mixstyle_layers: list = [],
             mixstyle_p: float = 0.5,
             mixstyle_alpha: float = 0.3,
@@ -130,7 +131,9 @@ class ResNet(nn.Module):
                 def hook(_, __, output):
                     if not self.training:
                         return
-                    self._feature_maps[layer_name] = output.detach()
+                    pooled = F.adaptive_avg_pool2d(output, (1, 1))
+                    flattened = torch.flatten(pooled, 1)
+                    self._feature_maps[layer_name] = flattened
                 return hook
 
             handle = layer.register_forward_hook(hook_factory(name))
@@ -238,14 +241,16 @@ class ResNet(nn.Module):
             x = self.mixstyle(x)
 
         #x = self.avgpool(x)
-        #x = torch.flatten(x, 1)
-
+        #sx = torch.flatten(x, 1)
+        
         layer_outputs = [self._feature_maps.get(f'layer{i+1}') for i in range(4)]
+        
         if domain_idx is not None and self.training:
             for i, features in enumerate(layer_outputs):
                 if features is not None:
                     self._update_style_stats(x=features, domain_idx=domain_idx, layer_idx=i)
-      
+        
+              
         return x, layer_outputs
 
     def forward(
@@ -253,15 +258,18 @@ class ResNet(nn.Module):
             x: Tensor,
             domain_idx: int = None
     ) -> Tensor:
-        out, layer_outputs = self._feature_extractor(x, domain_idx)
+        features, layer_outputs = self._feature_extractor(x, domain_idx)
 
-        out = self.avgpool(out)
-        v = out.view(out.size(0), -1)
+        features = self.avgpool(features)
+        features = torch.flatten(features, 1)
+
+        #out = self.avgpool(out)
+        v = features.view(features.size(0), -1)
         if self.fc is not None:
             v = self.fc(v)
-        y = self.classifier(v)
+        outputs = self.classifier(v)
 
-        return y
+        return outputs
 
 
     def get_style_stats(self, domain_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -324,7 +332,7 @@ class ResNet(nn.Module):
         """
         checkpoint = torch.load(path, map_location='cuda' if torch.cuda.is_available() else 'cpu')
         model = cls(**model_args)
-        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+        model.load_state_dict(checkpoint['model_state_dict'], strict=True)
     
         if not hasattr(model.style_stats, 'layer_counts'):
             model.style_stats.register_buffer('layer_counts',

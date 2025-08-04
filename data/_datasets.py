@@ -23,7 +23,7 @@ This code was taken and adapted from:
 
 DOMAIN_NAMES = {
     'PACS': ["art_painting", "cartoon", "photo", "sketch"],
-    'VLCS': ["bird", "car", "chair", "dog", "person"]
+    'VLCS': ["Caltech101", "LabelMe", "SUN09", "VOC2007"]
 }
 
 class DomainSubset(Subset):
@@ -161,6 +161,7 @@ class DomainDataset(MultiDomainDataset):
 
         # custom collate function
         def collate_fn(batch):
+            #batch = [item if len(item) == 3 else (*item, None) for item in batch]
             imgs = torch.stack([item[0] for item in batch])
             labels = torch.tensor([item[1] for item in batch])
             domains = torch.tensor([item[2] for item in batch])
@@ -210,12 +211,28 @@ class DomainDataset(MultiDomainDataset):
         test_loader = None
         if self.test_domain is not None:
             test_domain_dataset = self.data[self.test_domain]
+            """
             test_loader = DataLoader(
                 DomainSubset(test_domain_dataset, list(range(len(test_domain_dataset))), domain_idx=len(train_domain_indices)),
                 batch_size=batch_size,
                 shuffle=False,
                 collate_fn=collate_fn,
             )
+            """
+            test_subset = DomainSubset(
+                test_domain_dataset,
+                indices=list(range(len(test_domain_dataset))),
+                domain_idx=len(train_domain_indices),
+                original_domain_indices=[self.test_domain] * len(test_domain_dataset)
+            )
+            test_loader = DataLoader(
+                test_subset,  # Verwende DomainSubset!
+                batch_size=batch_size,
+                shuffle=False,
+                collate_fn=collate_fn,
+                num_workers=0
+            )
+            print("Test loader exists in datasets:", test_loader is not None)
     
         return train_loader, val_loader, test_loader
 
