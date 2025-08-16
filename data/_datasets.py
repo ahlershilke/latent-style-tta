@@ -26,6 +26,11 @@ DOMAIN_NAMES = {
     'VLCS': ["Caltech101", "LabelMe", "SUN09", "VOC2007"]
 }
 
+CLASS_NAMES = {
+    'PACS': ["dog", "elephant", "giraffe", "guitar", "horse", "house", "person"],
+    'VLCS': ["bird", "car", "chair", "dog", "person"]
+}
+
 class DomainSubset(Subset):
     """Wraps a dataset and adds domain index to the output."""
     def __init__(self, dataset, indices, domain_idx=None, original_domain_indices=None):

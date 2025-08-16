@@ -141,10 +141,12 @@ class MixStyle(nn.Module):
         # Sicherstellen dass wir nicht versehentlich B ändern
         x_normed = (x - mu.detach()) / sig.detach()
     
+        """
         # Stats tracking nur wenn shapes passen
         if domain_labels is not None and self.style_stats is not None:
             if domain_labels.shape[0] == B:  # Double-check
                 self.style_stats._update(domain_labels, layer_idx, mu, sig)
+        """
     
         # Mixing mit shape checks
         lam = self.beta.sample((B, 1, 1, 1)).to(x.device)

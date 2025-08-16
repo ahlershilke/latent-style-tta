@@ -262,7 +262,7 @@ class TrainingFramework:
     def run(self, hparam_path: str):
         """Train the model using lodo cross-validation"""
         #self.visualizer._visualize_raw_dataset(loader=DataLoader(self.full_dataset, batch_size=32, shuffle=False), n_samples=500)
-        #self.visualizer._visualize_complete_raw_dataset(loader=DataLoader(self.full_dataset, batch_size=32, shuffle=False))
+        self.visualizer._visualize_complete_raw_dataset(loader=DataLoader(self.full_dataset, batch_size=32, shuffle=False))
         hparams = self._load_hparams(hparam_path)
         results = {
             'all_val_acc': [],
@@ -394,7 +394,7 @@ class TrainingFramework:
                 for idx, (domain_name, test_data) in enumerate(zip(self.domain_names, test_data))
             }
             
-            """
+            
             dl = DataLoader(
                 dataset=self.full_dataset,
                 batch_size=64,
@@ -429,7 +429,7 @@ class TrainingFramework:
                 #n_samples=500
             #)
             #self.visualizer._visualize_raw_umap(loader=test_loader, domain_name=domain_name)
-            """
+            
     
         results['avg_val_acc'] = np.mean(results['all_val_acc'])
         results['avg_train_loss'] = np.mean(results['all_train_loss'])
@@ -437,15 +437,14 @@ class TrainingFramework:
         results['avg_test_acc'] = np.mean(results['all_train_acc'])
 
         # Gesamtergebnisse
-        """
-        self.visualizer._plot_comparative_metrics(results)
+        
+        #self.visualizer._plot_comparative_metrics(results)
         self.visualizer._visualize_embedded_dataset(
             model=model,
             loader=DataLoader(self.full_dataset, batch_size=32, shuffle=False),
             n_samples=500
         )
-        self._save_results(results)
-        """
+        self._save_results(results)    
 
         self.writer.close()
         domain_pbar.close()
@@ -453,6 +452,7 @@ class TrainingFramework:
         self.extract_style_stats_from_saved_models(hparam_path)
 
         return results
+
 
     def _save_model(self, model: nn.Module, filename: str):
         """Save the model state dictionary"""
@@ -478,7 +478,7 @@ class TrainingFramework:
             'count': model.style_stats.count.clone()
         }
 
-        """
+        
         torch.save({
             'model_state_dict': model_state_dict,
             #'style_stats': model.style_stats.state_dict(),
@@ -493,7 +493,7 @@ class TrainingFramework:
             'git_hash': subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip(),
             'timestamp': datetime.now().isoformat()
         }, save_path)
-        """
+        
 
         checkpoint = {
             'model_state_dict': model_state_dict,
@@ -617,6 +617,58 @@ def main():
         json.dump(final_results, f, indent=2)
 
     save_training_results(seed_config, "/mnt/data/hahlers/training")
+    
+
+def extract_stats_for_all_seeds():
+    seeds = [42, 7, 0]
+    domain_names = DOMAIN_NAMES["VLCS"]  # Annahme: ['Caltech', 'Labelme', 'Pascal', 'Sun']
+    dataset = VLCS(root="/mnt/data/hahlers/datasets", test_domain=None)
+    
+    print(f"\n=== Processing seed {0} ===")
+    save_dir = f"experiments/train_results/vlcs_woMS/saved_models/seed_{0}"
+     
+    for domain_idx, domain_name in enumerate(domain_names):
+        model_path = os.path.join(save_dir, f"best_fold_{domain_name}.pt")
+            
+        if not os.path.exists(model_path):
+            print(f"Modell für {domain_name} nicht gefunden in Seed {0}")
+            continue
+            
+        print(f"\nExtrahiere Style-Stats für {domain_name}-Modell (Seed {0})")
+            
+        # Trainingsdomänen sind alle außer der aktuellen
+        train_domains = [i for i in range(len(domain_names)) if i != domain_idx]
+            
+        # Framework initialisieren
+        trainer = TrainingFramework(
+            config={
+                'save_dir': save_dir,
+                'device': 'cuda' if torch.cuda.is_available() else 'cpu',
+                'log_dir': f"experiments/train_results/logs/seed_{0}",
+                'vis_dir': f"experiments/train_results/visualizations/seed_{0}"
+            },
+            dataset=VLCS(root="/mnt/data/hahlers/datasets", test_domain=None),
+            class_names=dataset.classes,
+            domain_names=domain_names
+        )
+            
+        # Style-Extraktion nur für Trainingsdomänen durchführen
+        trainer.style_manager.extract_from_saved_model(
+            model_path=model_path,
+            domain_name=domain_name,
+            model_class=resnet50,
+            model_args={
+                'num_classes': 5,
+                'num_domains': len(domain_names),
+                'batch_size': 64,  # Muss mit Trainings-Batchsize übereinstimmen
+                'use_mixstyle': False,
+                'pretrained': True
+            },
+            domain_indices_to_extract=train_domains
+        )
+
+#if __name__ == "__main__":
+ #   extract_stats_for_all_seeds()
 
 if __name__ == "__main__":
     main()

@@ -9,6 +9,7 @@ from typing import List, Dict, DefaultDict, Optional
 from data._datasets import DataLoader
 from sklearn.metrics import confusion_matrix, roc_curve, auc, precision_recall_curve
 from sklearn.manifold import TSNE
+from matplotlib.lines import Line2D
 import torch
 from data._datasets import DOMAIN_NAMES
 
@@ -1439,4 +1440,417 @@ class Visualizer:
 
         if show:
             plt.show()
+        plt.close()
+
+    
+    """   Visualizations for TTA   """
+
+    """
+    def visualize_tta_tsne(
+            self, 
+            original_features: torch.Tensor, 
+            augmented_features: Dict[str, torch.Tensor]
+        ):
+        all_features = [original_features.cpu().numpy()]
+        labels = ["Original"]
+
+        for domain, features in augmented_features.items():
+            all_features.append(features.cpu().numpy())
+            labels.append(f"Aug-{domain}")
+
+        combined = np.concatenate(all_features, axis=0)
+        tsne = TSNE(n_components=2, random_state=42)
+        embeddings = tsne.fit_transform(combined)
+
+        plt.figure(figsize=(12, 8))
+        start_idx = 0
+        for i, (feat, label) in enumerate(zip(all_features, labels)):
+            end_idx = start_idx + len(feat)
+            plt.scatter(embeddings[start_idx:end_idx, 0],
+                        embeddings[start_idx:end_idx, 1],
+                        label=label,
+                        alpha=0.6)
+            start_idx = end_idx
+
+        plt.title("t-SNE: Original vs. TTA-Augmented Features")
+        plt.legend()
+        save_path = os.path.join(self.vis_dir, "tsne", "tta_tsne_comparison.png")
+        plt.savefig(save_path, bbox_inches='tight')
+        plt.close()
+    """
+
+
+    def visualize_tta_tsne(
+            self, 
+            original_features, 
+            augmented_features, 
+            raw_train_data, 
+            test_domain
+        ):
+        """
+        Visualisiert TSNE-Plots für TTA-Experimente
+    
+        Args:
+            original_features: Features der originalen Testdomäne (vor Augmentation)
+            augmented_features: Dict {target_domain: features} nach Augmentation
+            train_features: Dict {domain: features} der Trainingsdomänen
+        """
+        try:     
+            # Daten vorbereiten
+            all_features, all_domains, all_point_types = [], [], []
+            domain_colors = {
+                'art_painting': "#0d73bc",
+                'cartoon': '#ff7f0e', 
+                'photo': "#16c316",
+                'sketch': "#d82b2b"
+                # für vlcs einfügen #TODO
+            }
+            augmented_color = '#9467bd'     # Lila für augmentierte Punkte
+            test_domain_color = '#8c564b'
+        
+            # 1. Trainingsdomänen hinzufügen
+            for domain, features in raw_train_data.items():
+                all_features.append(features)
+                all_domains.extend([domain] * len(features))
+                all_point_types.extend(['train'] * len(features))
+        
+            # 2. Originale Testdomäne
+            if isinstance(original_features, torch.Tensor):
+                original_features = original_features.cpu().numpy()
+            all_features.append(original_features)
+            all_domains.extend([test_domain] * len(original_features))
+            all_point_types.extend(['test'] * len(original_features))
+        
+            # 3. Augmentierte Versionen
+            for target_domain, features in augmented_features.items():
+                if isinstance(features, torch.Tensor):
+                    features = features.cpu().numpy()
+                all_features.append(features)
+                all_domains.extend([test_domain] * len(features))
+                all_point_types.extend(['augmented'] * len(features))
+        
+            # TSNE berechnen
+            tsne = TSNE(n_components=2, random_state=42, perplexity=30)
+            tsne_results = tsne.fit_transform(np.concatenate(all_features))
+        
+            # Plot erstellen
+            plt.figure(figsize=(14, 10))
+        
+            # Scatter plot für jeden Punkttyp
+            for point_type in ['train', 'test', 'augmented']:
+                mask = np.array(all_point_types) == point_type
+                current_domains = np.array(all_domains)[mask]
+            
+                # Einmalige Farben für jede Domain
+                colors = []
+                for domain in current_domains:
+                    if point_type == 'train':
+                        colors.append(domain_colors[domain])
+                    elif point_type == 'test':
+                        colors.append(test_domain_color)
+                    else:  # augmented
+                        colors.append(augmented_color)
+            
+                # Marker setzen
+                marker = 'o' if point_type in ['train', 'test'] else '^'
+                label = {
+                    'train': 'Training domains',
+                    'test': f'Original {test_domain}',
+                    'augmented': f'Augmented {test_domain}'
+                }[point_type]
+            
+                plt.scatter(
+                    tsne_results[mask, 0],
+                    tsne_results[mask, 1],
+                    c=colors,
+                    label=label,
+                    alpha=0.7,
+                    marker=marker,
+                    s=60,
+                    edgecolors='w',
+                    linewidths=0.5
+                )
+        
+            # 5. Legende erstellen
+            legend_elements = []
+            # Domänen in Legende
+            for domain, color in domain_colors.items():
+                legend_elements.append(Line2D([0], [0], 
+                                           marker='o', 
+                                           color='w', 
+                                           label=domain,
+                                           markerfacecolor=color, 
+                                           markersize=10))
+            # Original und Augmented in Legende
+            legend_elements.append(Line2D([0], [0], 
+                                   marker='o', 
+                                   color='w', 
+                                   label=f'Original {test_domain}',
+                                   markerfacecolor=test_domain_color, 
+                                   markersize=10))
+            legend_elements.append(Line2D([0], [0], 
+                                   marker='^', 
+                                   color='w', 
+                                   label=f'Augmented {test_domain}',
+                                   markerfacecolor=augmented_color, 
+                                   markersize=10))
+        
+            plt.legend(handles=legend_elements, bbox_to_anchor=(1.05, 1), loc='upper left')
+            plt.title(f"t-SNE: Feature Distribution (Test Domain: {test_domain})")
+            plt.xlabel("t-SNE Dimension 1")
+            plt.ylabel("t-SNE Dimension 2")
+            plt.tight_layout()
+        
+            # 6. Plot speichern
+            os.makedirs(self.vis_dir, exist_ok=True)
+            save_path = os.path.join(self.vis_dir, "tsne", f"tta_tsne_{test_domain}.png")
+            plt.savefig(save_path, bbox_inches='tight', dpi=300)
+            plt.close()
+        
+        except Exception as e:
+            print(f"Error in TTA TSNE visualization: {str(e)}")
+
+    
+    def visualize_tta_gradcam(
+            self, 
+            model,
+            original_img: torch.Tensor,
+            augmented_imgs: Dict[str, torch.Tensor]
+    ):
+        num_samples = len(augmented_imgs) + 1
+        fig, axes = plt.subplots(num_samples, 2, figsize=(12, 4*num_samples))
+
+        if num_samples == 1:
+            axes = axes.reshape(1, -1)
+
+        # orig
+        self._plot_single_gradcam(model, original_img, axes[0], "Original")
+
+        # augmented
+        for i, (domain, img) in enumerate(augmented_imgs.items(), start=1):
+            self._plot_single_gradcam(model, img, axes[i], f"Aug-{domain}")
+
+        plt.tight_layout()
+        #plt.suptitle("Grad-CAM: Original vs. TTA-Augmentation", y=1.02)
+        save_path = os.path.join(self.vis_dir, "heatmaps", "tta_gradcam.png")
+        plt.savefig(save_path, bbox_inches='tight', dpi=300)
+        plt.close()
+
+
+    def _plot_single_gradcam(self, model, img, axes, title):
+        model.eval()
+
+        if img is None:
+            print("Warning: No image provided for Grad-CAM")
+            return
+
+        feature_maps, gradients = [], []
+
+        target_layer = None
+        for module in model.modules():
+            if isinstance(module, torch.nn.Conv2d):
+                target_layer = module
+
+        if target_layer is None:
+            print("Warning: No convolutional layer found for Grad-CAM")
+            return
+
+        def forward_hook(m, i, o):
+            feature_maps.append(o.detach())
+        def backward_hook(m, gi, go):
+            gradients.append(go[0].detach())
+
+        forward_handle = target_layer.register_forward_hook(forward_hook)
+        backward_handle = target_layer.register_backward_hook(backward_hook)
+        
+        try:
+            img_tensor = img.clone().to(self.device)
+            #img_tensor.requires_grad_(True)
+            #img_tensor = img_tensor.unsqueeze(0) if img_tensor.dim() == 3 else img_tensor
+
+            if img_tensor.dim() == 3:
+                img_tensor = img_tensor.unsqueeze(0)
+            elif img_tensor.dim() == 4 and img_tensor.shape[0] == 1:
+                pass
+            else:
+                raise ValueError(f"Unexpected image shape: {img_tensor.shape}")
+
+            with torch.enable_grad():   
+                #img_tensor = img_tensor.to(self.device).unsqueeze(0)
+                output = model(img_tensor)
+                pred_class = output.argmax(dim=1)
+
+                model.zero_grad()
+                one_hot = torch.zeros_like(output)
+                one_hot[0][pred_class] = 1
+                output.backward(gradient=one_hot, retain_graph=True)
+
+            if feature_maps and gradients:
+                features = feature_maps[0][0]
+                grads = gradients[0][0]
+
+                weights = torch.mean(grads, dim=[1, 2], keepdim=True)
+                cam = torch.relu((weights * features).sum(dim=0))
+
+                cam = (cam - cam.min()) / (cam.max() - cam.min() - 1e-8)
+                cam = cam.cpu().numpy()
+
+            img_display = img_tensor[0].cpu().permute(1, 2, 0).numpy()
+            img_display = img_display * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
+            img_display = np.clip(img_display, 0, 1)
+
+            axes[0].imshow(img_display)
+            axes[0].set_title(f"{title}\nPred: {self.class_names[pred_class.item()]}")
+            axes[0].axis('off')
+           
+            axes[1].imshow(img_display)
+            axes[1].imshow(cam, cmap='jet', alpha=0.5)
+            axes[1].set_title(f"{title} - Grad-Cam")
+            axes[1].axis('off')
+
+        except Exception as e:
+            print(f"Error during Grad-CAM visualization: {str(e)}")
+        
+        finally:
+            forward_handle.remove()
+            backward_handle.remove()
+
+
+    def plot_tta_confusion_matrices(
+            self,
+            original_results: Dict[str, np.ndarray],
+            augmented_results: Dict[str, Dict[str, np.ndarray]],
+            normalize: bool = True
+    ):
+        plt.figure(figsize=(15, 5 * (len(augmented_results) + 1)))
+
+        plt.subplot(len(augmented_results) + 1, 1, 1)
+        self._plot_single_confusion(
+            preds=original_results['preds'],
+            labels=original_results['labels'],
+            title="Original Prediction",
+            normalize=normalize
+        )
+
+        for i, (domain, results) in enumerate(augmented_results.items(), start=2):
+            plt.subplot(len(augmented_results) + 1, 1, i)
+            self._plot_single_confusion(
+                preds=results['preds'],
+                labels=results['labels'],
+                title=f"TTA-Augmented: {domain}",
+                normalize=normalize
+            )
+        
+        plt.tight_layout()
+        save_path = os.path.join(self.vis_dir, "confusion_matrices", "tta_confusion_comparison.png")
+        plt.savefig(save_path, bbox_inches='tight', dpi=300)
+        plt.close()
+
+
+    def _plot_single_confusion(self, preds: np.ndarray, labels: np.ndarray, 
+                         title: str, normalize: bool):
+        cm = confusion_matrix(labels, preds)
+    
+        if normalize:
+            cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+            fmt = '.2f'
+            vmin, vmax = 0, 1
+        else:
+            fmt = 'd'
+            vmin, vmax = None, None
+    
+        sns.heatmap(cm, annot=True, fmt=fmt, cmap='Blues',
+                    xticklabels=self.class_names,
+                    yticklabels=self.class_names,
+                    vmin=vmin, vmax=vmax)
+    
+        plt.title(title)
+        plt.ylabel('True Label')
+        plt.xlabel('Predicted Label')
+        plt.xticks(rotation=45)
+        plt.yticks(rotation=0)
+
+    
+    def plot_confidence_intervals(self, results: Dict[str, Dict]):
+        plt.figure(figsize=(12, 6))
+
+        domains = list(results['target_domains'].keys())
+        means = [np.mean(results['target_domains'][d]['all_probs'], axis=0).mean() for d in domains]
+        stds = [np.std(results['target_domains'][d]['all_probs'], axis=0).mean() for d in domains]
+
+        plt.errorbar(domains, means, yerr=stds, fmt='o', capsize=5, label='Mean Confidence ± Std')
+
+        plt.title("Prediction Confidence across Augmentation Domains")
+        plt.ylabel("Mean Confidence Score")
+        plt.xticks(rotation=45)
+        plt.legend()
+
+        save_path = os.path.join(self.vis_dir, "test_stats", "confidence_intervals.png")
+        plt.savefig(save_path, bbox_inches='tight')
+        plt.close()
+
+
+    def plot_feature_stats_heatmap(
+            self,
+            original_img: torch.Tensor,
+            augmented_imgs: List[torch.Tensor]
+    ):
+        def get_stats(img):
+            img = img.cpu().numpy()
+            # Für (C, H, W) Tensor
+            if img.ndim == 3:
+                return {
+                    'mean': img.mean(axis=(1, 2)),  # Mittelwert über Höhe und Breite
+                    'std': img.std(axis=(1, 2))
+                }
+            # Für (B, C, H, W) Tensor
+            elif img.ndim == 4:
+                return {
+                    'mean': img.mean(axis=(0, 2, 3)),  # Mittelwert über Batch, Höhe und Breite
+                    'std': img.std(axis=(0, 2, 3))
+                }
+            else:
+                raise ValueError(f"Unexpected image dimension: {img.ndim}")
+        
+        orig_stats = get_stats(original_img)
+        aug_stats = [get_stats(img) for img in augmented_imgs]
+
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+
+        sns.heatmap([orig_stats['mean'], *[s['mean'] for s in aug_stats]],
+                    ax=axes[0, 0], annot=True,
+                    xticklabels=["R", "G", "B"],
+                    yticklabels=["Original"] + [f"Aug {i}" for i in range(len(aug_stats))])
+        axes[0, 0].set_title("Channel Means")
+
+        sns.heatmap([orig_stats['std'], *[s['std'] for s in aug_stats]],
+                    ax=axes[0, 1], annot=True,
+                    xticklabels=["R", "G", "B"])
+        axes[0, 1].set_title("Channel Stds")
+
+        plt.suptitle("RGB Channel Statistics before/after Augmentation")
+        save_path = os.path.join(self.vis_dir, "heatmaps", "rbg_stats_heatmap.png")
+        plt.savefig(save_path, bbox_inches='tight')
+        plt.close()
+
+
+    def plot_prediction_consistency(
+            self,
+            original_probs: np.ndarray,
+            augmented_probs: List[np.ndarray]
+    ):
+        plt.figure(figsize=(8, 8))
+
+        for i, aug_probs in enumerate(augmented_probs):
+            plt.scatter(original_probs.max(axis=1), aug_probs.max(axis=1),
+                        alpha=0.3, label=f"Aug {i}")
+            
+        plt.plot([0, 1], [0, 1], 'k--', label="Perfect Consistency") 
+        plt.xlabel("Original Confidence")
+        plt.ylabel("Augmented Confidence")
+        plt.title("Prediction Consistency: Original vs Augmented")
+        plt.legend()
+
+        save_path = os.path.join(self.vis_dir, "test_stats", "prediction_consistency.png")
+        plt.savefig(save_path)
         plt.close()

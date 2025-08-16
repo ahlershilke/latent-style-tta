@@ -474,7 +474,7 @@ class HP_Tuner:
         try:
             # Load all trial data as before
             all_trials = []
-            domain_names = DOMAIN_NAMES['PACS']
+            domain_names = DOMAIN_NAMES['VLCS']
         
             for fold_dir in Path(save_dir).glob("[0-9]"):
                 fold_num = fold_dir.name

@@ -131,9 +131,10 @@ class ResNet(nn.Module):
                 def hook(_, __, output):
                     if not self.training:
                         return
-                    pooled = F.adaptive_avg_pool2d(output, (1, 1))
-                    flattened = torch.flatten(pooled, 1)
-                    self._feature_maps[layer_name] = flattened
+                    #pooled = F.adaptive_avg_pool2d(output, (1, 1))
+                    #flattened = torch.flatten(pooled, 1)
+                    #self._feature_maps[layer_name] = flattened
+                    self._feature_maps[layer_name] = output
                 return hook
 
             handle = layer.register_forward_hook(hook_factory(name))
@@ -225,31 +226,35 @@ class ResNet(nn.Module):
         x = self.maxpool(x)
 
         x = self.layer1(x)
-        if self.mixstyle is not None and 'layer1' in self.mixstyle_layers:
+        if self.mixstyle and 'layer1' in self.mixstyle_layers:
             x = self.mixstyle(x)
 
         x = self.layer2(x)
-        if self.mixstyle is not None and 'layer2' in self.mixstyle_layers:
+        if self.mixstyle and 'layer2' in self.mixstyle_layers:
             x = self.mixstyle(x)
 
         x = self.layer3(x)
-        if self.mixstyle is not None and 'layer3' in self.mixstyle_layers:
+        if self.mixstyle and 'layer3' in self.mixstyle_layers:
             x = self.mixstyle(x)
 
         x = self.layer4(x)
-        if self.mixstyle is not None and 'layer4' in self.mixstyle_layers:
+        if self.mixstyle and 'layer4' in self.mixstyle_layers:
             x = self.mixstyle(x)
 
         #x = self.avgpool(x)
         #sx = torch.flatten(x, 1)
         
         layer_outputs = [self._feature_maps.get(f'layer{i+1}') for i in range(4)]
+        #layer_outputs = [self._feature_maps[f'layer{i+1}'] for i in range(4)]
         
         if domain_idx is not None and self.training:
             for i, features in enumerate(layer_outputs):
                 if features is not None:
-                    self._update_style_stats(x=features, domain_idx=domain_idx, layer_idx=i)
-        
+                    self._update_style_stats(
+                        x=features, 
+                        domain_idx=domain_idx, 
+                        layer_idx=i
+                    )
               
         return x, layer_outputs
 
@@ -277,10 +282,13 @@ class ResNet(nn.Module):
     
     def _update_style_stats(self, x: torch.Tensor, domain_idx: torch.Tensor, layer_idx: int):
         # collects μ and σ for layers and domains
+        #print(f"Update stats - dim: {x.dim()}, layer: {layer_idx}")
         if not (self.style_stats_enabled and self.training and domain_idx is not None):
+            print("Update skipped - disabled or no domain")
             return
         
         if x.dim() != 4:
+            print(f"Update skipped - wrong dim: {x.dim()}")
             return
 
         mu = x.mean(dim=[2, 3], keepdim=True).detach()
@@ -522,9 +530,9 @@ def resnet34(num_classes: int, num_domains: int, pretrained: bool = True, verbos
     return model
 
 
-def resnet50(num_classes: int, num_domains: int, pretrained: bool = True, verbose=False, **kwargs):
+def resnet50(num_classes: int, num_domains: int, pretrained: bool = True, verbose=False, use_mixstyle: bool = False, **kwargs):
     model = ResNet(
-        Bottleneck, [3, 4, 6, 3], num_classes, num_domains, verbose=verbose, **kwargs
+        Bottleneck, [3, 4, 6, 3], num_classes, num_domains, verbose=verbose, use_mixstyle=use_mixstyle, **kwargs
     )
     if pretrained:
         init_pretrained_weights(model, model_urls['resnet50'], verbose=verbose)

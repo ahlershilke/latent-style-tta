@@ -29,7 +29,7 @@ def main():
     os.makedirs("experiments/hp_results", exist_ok=True)
     
     for fold_idx, (train_data, val_data, test_data) in enumerate(all_splits):
-        domain_name = DOMAIN_NAMES['PACS'][fold_idx]
+        domain_name = DOMAIN_NAMES['VLCS'][fold_idx]
         print(f"\n=== Fold {fold_idx} ({domain_name}) ===")
 
         save_dir = f"experiments/hp_results/{fold_idx}"
@@ -38,8 +38,8 @@ def main():
         tuner = HP_Tuner(
             train_data=train_data,
             val_data=val_data,
-            num_classes=7,
-            num_domains=len(DOMAIN_NAMES['PACS']) - 1,
+            num_classes=5,
+            num_domains=len(DOMAIN_NAMES['VLCS']) - 1,
             n_trials=args.num_trials,
             save_dir=save_dir,
             fold_info={'fold': fold_idx, 'test_domain': domain_name}
@@ -70,8 +70,8 @@ def main():
     global_tuner = HP_Tuner(
         train_data=None,
         val_data=None,
-        num_classes=7,
-        num_domains=len(DOMAIN_NAMES['PACS']) - 1,
+        num_classes=5,
+        num_domains=len(DOMAIN_NAMES['VLCS']) - 1,
         n_trials=0,
         save_dir="experiments/hp_results/global",
         fold_info={'fold': -1, 'test_domain': 'global'}
@@ -94,14 +94,14 @@ def main():
     print("\n=== Phase 3: Evaluating global parameters ===")
     global_eval_results = []
     for fold_idx, (_, _, test_data) in enumerate(all_splits):
-        domain_name = DOMAIN_NAMES['PACS'][fold_idx]
+        domain_name = DOMAIN_NAMES['VLCS'][fold_idx]
         print(f"Evaluating on domain: {domain_name}")
         
         eval_tuner = HP_Tuner(
             train_data=None,  # only evaluation
             val_data=None,
-            num_classes=7,
-            num_domains=len(DOMAIN_NAMES['PACS']) - 1,
+            num_classes=5,
+            num_domains=len(DOMAIN_NAMES['VLCS']) - 1,
             n_trials=0,  # No tuning
             save_dir=f"experiments/hp_results/{fold_idx}",
             fold_info={'fold': fold_idx, 'test_domain': domain_name}

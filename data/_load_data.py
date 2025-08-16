@@ -23,12 +23,12 @@ def get_train_val_datasets():
 
 def get_train_val_datasets():
     test_domain_name = 'photo'
-    domains = ['art_painting', 'cartoon', 'photo', 'sketch']
-    #domains = ['Caltech101', 'LabelMe', 'SUN09', 'VOC2007']
+    #domains = ['art_painting', 'cartoon', 'photo', 'sketch']
+    domains = ['Caltech101', 'LabelMe', 'SUN09', 'VOC2007']
     test_domain_index = domains.index(test_domain_name)
 
     dataset = get_dataset(
-        name='PACS',
+        name='VLCS',
         root_dir='/mnt/data/hahlers/datasets',
         test_domain=test_domain_index,
         augment=None
