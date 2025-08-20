@@ -12,3 +12,4 @@ optuna
 plotly
 umap-learn>=0.5.3
 tensorboard>=2.12.0
+statsmodels.formula.api

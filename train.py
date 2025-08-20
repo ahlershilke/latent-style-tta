@@ -107,8 +107,8 @@ class TrainingFramework:
         """Initialises the best model with given hyperparameters"""
         model = resnet50(
             num_classes=len(self.class_names),
-            num_domains=len(DOMAIN_NAMES['PACS']),
-            #num_domains=len(DOMAIN_NAMES['VLCS']),
+            #num_domains=len(DOMAIN_NAMES['PACS']),
+            num_domains=len(DOMAIN_NAMES['VLCS']),
             domain_names=self.domain_names,
             batch_size=hparams['batch_size'],
             use_mixstyle=False,
@@ -541,7 +541,7 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_root', type=str, default="/mnt/data/hahlers/datasets")
-    parser.add_argument('--hparam_file', type=str, default="configs/pacs/global_config.yaml")
+    parser.add_argument('--hparam_file', type=str, default="configs/vlcs/global_config.yaml")
     parser.add_argument('--num_epochs', type=int, default=50, help='Number of training epochs')
     parser.add_argument('--domains', type=int, default=4, help='Number of domains')
     args = parser.parse_args()
@@ -571,14 +571,14 @@ def main():
         os.makedirs(seed_config['save_dir'], exist_ok=True)
         os.makedirs(seed_config['vis_dir'], exist_ok=True)
 
-        full_dataset = PACS(root=seed_config['data_root'], test_domain=None)
-        #full_dataset = VLCS(root=seed_config['data_root'], test_domain=None)
+        #full_dataset = PACS(root=seed_config['data_root'], test_domain=None)
+        full_dataset = VLCS(root=seed_config['data_root'], test_domain=None)
         
         trainer = TrainingFramework(
             config=seed_config,
             dataset=full_dataset,
             class_names=full_dataset.classes,
-            domain_names=DOMAIN_NAMES["PACS"]
+            domain_names=DOMAIN_NAMES["VLCS"]
         )
         
         results = trainer.run(args.hparam_file)
@@ -591,7 +591,7 @@ def main():
     final_visualizer = Visualizer(
         config=None,
         class_names=full_dataset.classes,
-        domain_names=DOMAIN_NAMES["PACS"],
+        domain_names=DOMAIN_NAMES["VLCS"],
         vis_dir="experiments/train_results/visualizations/final"
     )
     test_stats = final_visualizer.calculate_test_statistics(all_results)

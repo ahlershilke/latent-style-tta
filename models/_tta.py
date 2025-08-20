@@ -380,8 +380,10 @@ class TTAClassifier(nn.Module):
                 'all_preds': [],
                 'all_labels': [],
                 'all_probs': [],
+                'real_class_probs': [],
                 'augmentation_probs': [],
                 'variance': [],
+                'real_class_var': [],
                 'disagreement': []
             } for domain in available_domains
         }
@@ -390,7 +392,8 @@ class TTAClassifier(nn.Module):
         original_results = {
             'all_preds': [],
             'all_labels': [],
-            'all_probs': []
+            'all_probs': [],
+            'real_class_probs': []
         }
 
         viz_data = {
@@ -405,6 +408,7 @@ class TTAClassifier(nn.Module):
         }
 
         cross_domain_variance_all, cross_domain_disagreement_all = [], []
+        cross_domain_real_class_var_all = []
 
         try:
             with torch.no_grad():
@@ -444,10 +448,14 @@ class TTAClassifier(nn.Module):
                         original_results['all_preds'].append(orig_preds.cpu().numpy())
                         original_results['all_labels'].append(labels.cpu().numpy())
                         original_results['all_probs'].append(orig_probs.cpu().numpy())
+                        labels_np = labels.cpu().numpy()
+                        orig_real_class_probs = orig_probs.cpu().numpy()[np.arange(len(labels_np)), labels_np]
+                        original_results['real_class_probs'].append(orig_real_class_probs)
 
                     #batch_aug_preds = []
                     #probs_per_augmentation = []
                     probs_per_augmentation, preds_per_augmentation = [], []
+                    real_class_probs_per_domain = []
 
                     # 2. process each target domain separately
                     for target_domain in available_domains:
@@ -484,10 +492,7 @@ class TTAClassifier(nn.Module):
                         probs_tensor = self.softmax(domain_logits)
                         domain_preds = torch.argmax(probs_tensor, dim=1)
                         domain_probs = probs_tensor.cpu().numpy()
-                                          
-                        #batch_aug_preds.append(domain_preds)
-                        #batch_aug_preds.append(domain_preds.cpu().numpy())
-                        #probs_per_augmentation.append(domain_probs)
+                                        
                         probs_per_augmentation.append(domain_probs)
                         preds_per_augmentation.append(domain_preds.cpu().numpy())
 
@@ -496,27 +501,33 @@ class TTAClassifier(nn.Module):
                         domain_results[target_domain]['all_probs'].append(domain_probs)
                         
                         if labels is not None:
-                            domain_results[target_domain]['all_labels'].append(batch[1].cpu().numpy())
+                            labels_np = labels.cpu().numpy()
+                            real_class_probs = domain_probs[np.arange(len(labels_np)), labels_np]
+                            domain_results[target_domain]['real_class_probs'].append(real_class_probs)
+                            real_class_probs_per_domain.append(real_class_probs)
+                            domain_results[target_domain]['all_labels'].append(labels_np)
 
                         if batch_idx == 0:
                             viz_data['features']['augmented'][target_domain].append(domain_logits) #TODO?
                             viz_data['sample_imgs']['augmented'][target_domain] = images[0]
                             viz_data['probs']['augmented'][target_domain].append(domain_probs)
-
-                        #all_domain_probs = np.stack(domain_probs, axis=0)
-                        #sample_variances = np.var(all_domain_probs, axis=0).mean()
-                            
-                        #domain_results[target_domain]['variance'].append(sample_variances)
-
+                                                
                         # Remove hooks
                         for hook in hooks:
                             hook.remove()
                     
                     if len(probs_per_augmentation) > 0 and len(preds_per_augmentation) > 0:
                         all_probs = np.stack(probs_per_augmentation, axis=0)
+                        
                         per_class_var = np.var(all_probs, axis=0)
                         per_sample_var = per_class_var.mean(axis=1)
                         cross_domain_variance_all.extend(per_sample_var.tolist())
+                        
+                        if len(real_class_probs_per_domain) > 0:
+                            real_class_probs_arr = np.stack(real_class_probs_per_domain, axis=0)
+                            real_class_var = np.var(real_class_probs_arr, axis=0)
+                            cross_domain_real_class_var_all.extend(real_class_var.tolist())
+
                         preds_arr = np.stack(preds_per_augmentation, axis=0)
                         batch_disagreements = []
                         for j in range(preds_arr.shape[1]):
@@ -539,21 +550,18 @@ class TTAClassifier(nn.Module):
                 if hasattr(module, '_forward_hooks'):
                     module._forward_hooks.clear()
 
-        if cross_domain_variance_all:
-            mean_cross_variance = float(np.mean(cross_domain_variance_all))
-        else:
-            mean_cross_variance = None
-
-        if cross_domain_disagreement_all:
-            mean_cross_disagreement = float(np.mean(cross_domain_disagreement_all))
-        else:
-            mean_cross_disagreement = None
+        
+        mean_cross_variance = float(np.mean(cross_domain_variance_all)) if cross_domain_variance_all else None
+        mean_cross_disagreement = float(np.mean(cross_domain_disagreement_all)) if cross_domain_disagreement_all else None
+        mean_cross_real_class_var = float(np.mean(cross_domain_real_class_var_all)) if cross_domain_real_class_var_all else None
         
         results = {
             'original': {
                 'accuracy': None,
                 'predictions': None,
-                'labels': None
+                'labels': None,
+                'real_class_probs': None,
+                'real_class_var': None
             },
             'target_domains': {}
         }
@@ -562,23 +570,38 @@ class TTAClassifier(nn.Module):
             orig_preds = np.concatenate(original_results['all_preds'])
             orig_labels = np.concatenate(original_results['all_labels'])
             orig_acc = (orig_preds == orig_labels).mean()
+            orig_real_class_probs = np.concatenate(original_results['real_class_probs'])
+            orig_real_class_var = np.var(orig_real_class_probs)            
+            
             results['original'] = {
                 'accuracy': float(orig_acc),
                 'predictions': orig_preds.tolist(),
                 'labels': orig_labels.tolist(),
-                'probs': np.concatenate(original_results['all_probs']).tolist()
+                'probs': np.concatenate(original_results['all_probs']).tolist(),
+                'real_class_probs': orig_real_class_probs.tolist(),
+                'real_class_var': float(orig_real_class_var)
             }
 
         # process each target domain
         for domain in available_domains:
-            if domain_results[domain]:
+            if domain_results[domain] and domain_results[domain]['all_labels']:
                 preds = np.concatenate(domain_results[domain]['all_preds'])
                 labels = np.concatenate(domain_results[domain]['all_labels'])
                 probs = np.concatenate(domain_results[domain]['all_probs'])
+                real_class_probs = np.concatenate(domain_results[domain]['real_class_probs'])
             
                 acc = (preds == labels).mean()
+                #real_class_var = np.var(real_class_probs)
+                all_probs = np.concatenate(domain_results[domain]['all_probs'], axis=0)
+                if len(all_probs) > 0:
+                    per_class_var = np.var(all_probs, axis=0)
+                    avg_variance = float(np.mean(per_class_var))
+                    real_class_var = float(np.var(real_class_probs))
+                else:
+                    avg_variance = None
+                    real_class_var = None
 
-                avg_variance = np.mean(domain_results[domain]['variance']) if domain_results[domain]['variance'] else None
+                #avg_variance = np.mean(domain_results[domain]['variance']) if domain_results[domain]['variance'] else None
                 avg_disagreement = np.mean(domain_results[domain]['disagreement']) if domain_results[domain]['disagreement'] else None
 
                 results['target_domains'][domain] = {
@@ -586,23 +609,24 @@ class TTAClassifier(nn.Module):
                     'predictions': preds.tolist(),
                     'labels': labels.tolist(),
                     'probs': probs.tolist(),
-                    'variance': float(avg_variance) if avg_variance is not None else None,
+                    'real_class_probs': real_class_probs.tolist(),
+                    'real_class_var': real_class_var,
+                    'variance': avg_variance if avg_variance is not None else None,
                     'disagreement': float(avg_disagreement) if avg_disagreement is not None else None,
                     'test_domain': self.test_domain,
                     'mode': self.mode,
                     'seed': self.seed,
                     'cross_domain_mean_variance': mean_cross_variance,
-                    'cross_domain_mean_disagreement': mean_cross_disagreement
+                    'cross_domain_mean_disagreement': mean_cross_disagreement,
+                    'cross_domain_mean_real_class_var': mean_cross_real_class_var
                 }
+        
         domain_accuracies = [
             results['target_domains'][domain]['accuracy']
             for domain in available_domains
             if 'accuracy' in results['target_domains'][domain]
         ]
-        if len(domain_accuracies) >= 2:
-            accuracy_variance = float(np.var(domain_accuracies))
-        else:
-            accuracy_variance = None
+        accuracy_variance = float(np.var(domain_accuracies)) if len(domain_accuracies) >= 2 else None
 
         results['metadata'] = {
             'accuracy_variance': accuracy_variance,
@@ -615,6 +639,7 @@ class TTAClassifier(nn.Module):
 
         results['cross_domain_mean_variance'] = mean_cross_variance
         results['cross_domain_mean_disagreement'] = mean_cross_disagreement
+        results['cross_domain_mean_real_class_var'] = mean_cross_real_class_var
 
         if self.visualizer and viz_data['first_batch_processed']:
             try:
@@ -726,7 +751,11 @@ class TTAExperiment:
             "selective_1_2", "selective_1_3", "selective_2_3",
             "average"
         ]
-
+    
+    """
+    def get_all_modes(self):
+        return ["selective_0_1", "single_0", "average"]
+    """
         
     def run_all_domains(self):
         """Run TTA for all domains as test domains, maintaining both text logs and JSON results"""
@@ -762,6 +791,7 @@ class TTAExperiment:
                     results['results'][test_domain][mode] = {}
 
                     target_accs = defaultdict(list)
+                    target_real_class_vars = defaultdict(list)
 
                     for seed in self.config['seeds']:
                         txt_f.write(f"\nSeed: {seed}\n")
@@ -775,6 +805,8 @@ class TTAExperiment:
                                 orig = seed_results['original']
                                 txt_f.write("Target original:\n")
                                 txt_f.write(f"  Accuracy: {orig['accuracy']:.4f}\n")
+                                if orig.get('real_class_variance') is not None:
+                                    txt_f.write(f"  Real class variance: {orig['real_class_variance']:.4f}\n")
 
                             for target_domain in self.domain_names:
                                 if target_domain == test_domain:
@@ -785,6 +817,9 @@ class TTAExperiment:
                                     if 'accuracy' in metrics:
                                         target_accs[target_domain].append(metrics['accuracy'])
                                         txt_f.write(f"  Accuracy: {metrics['accuracy']:.4f}\n")
+                                    if metrics.get('real_class_variance') is not None:
+                                        target_real_class_vars[target_domain].append(metrics['real_class_variance'])
+                                        txt_f.write(f"  Real class variance: {metrics['real_class_variance']:.4f}\n")
                             
                             cross = seed_results.get('cross_domain')
                             if cross:
@@ -793,6 +828,8 @@ class TTAExperiment:
                                     txt_f.write(f"  Mean cross-domain variance: {cross['mean_variance_across_domains']:.4f}\n")
                                 if cross.get('mean_disagreement_across_domains') is not None:
                                     txt_f.write(f"  Mean cross-domain disagreement: {cross['mean_disagreement_across_domains']:.4f}\n")
+                                if cross.get('mean_real_class_variance') is not None:
+                                    txt_f.write(f"  Mean real class variance: {cross['mean_real_class_variance']:.4f}\n")
 
                         except Exception as e:
                             error_msg = f"Error for mode {mode}, seed {seed}: {str(e)}"
@@ -806,6 +843,7 @@ class TTAExperiment:
 
                     if target_accs:
                         all_accs = []
+                        all_real_class_vars = []
 
                         for acc_list in target_accs.values():
                             all_accs.extend(acc_list)
@@ -815,6 +853,12 @@ class TTAExperiment:
                             std_acc = np.std(all_accs)
                             txt_f.write(f"\nMean accuracy across seeds (target domains only): {mean_acc:.4f} ± {std_acc:.4f}\n")
                             results['results'][test_domain][mode]['mean_target_accuracy'] = float(mean_acc)
+
+                        if all_real_class_vars:
+                            mean_var = np.mean(all_real_class_vars)
+                            std_var = np.std(all_real_class_vars)
+                            txt_f.write(f"Mean real class variance across seeds (target domains only): {mean_var:.4f} ± {std_var:.4f}\n")
+                            results['results'][test_domain][mode]['mean_real_class_variance'] = float(mean_var)
 
         with open(json_file, 'w') as f:
             serializable_results = convert_to_serializable(results)
@@ -926,12 +970,14 @@ class TTAExperiment:
         processed_results = {
             'original': {
                 'accuracy': results['original']['accuracy'],
-                'variance': None,
-                'disagreement': None
+                'variance': results['original'].get('variance', None),
+                'disagreement': results['original'].get('disagreement', None),
+                'real_class_variance': results['original'].get('real_class_variance', None)
             },
             'cross_domain': {
                 'mean_variance_across_domains': results.get('cross_domain_mean_variance'),
-                'mean_disagreement_across_domains': results.get('cross_domain_mean_disagreement')
+                'mean_disagreement_across_domains': results.get('cross_domain_mean_disagreement'),
+                'mean_real_class_variance': results.get('cross_domain_mean_real_class_var')
             }
         }
     
@@ -939,7 +985,9 @@ class TTAExperiment:
             processed_results[domain] = {
                 'accuracy': metrics['accuracy'],
                 'variance': metrics['variance'],
-                'disagreement': metrics['disagreement']
+                'disagreement': metrics['disagreement'],
+                'real_class_variance': metrics.get('real_class_var'),
+                'real_class_probs': metrics.get('real_class_probs')
             }
         
         return processed_results

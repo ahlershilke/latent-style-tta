@@ -97,10 +97,10 @@ class DomainAwareHook:
                     mu = mu.repeat(1, repeat_factor, 1, 1)
                     sig = sig.repeat(1, repeat_factor, 1, 1)
     
-        # Dimensionen anpassen: [C] -> [1, C, 1, 1]
-        if mu.dim() == 1:
-            mu = mu.view(1, -1, 1, 1)
-            sig = sig.view(1, -1, 1, 1)
+            # Dimensionen anpassen: [C] -> [1, C, 1, 1]
+            if mu.dim() == 1:
+                mu = mu.view(1, -1, 1, 1)
+                sig = sig.view(1, -1, 1, 1)
 
         feat_mu = output.mean(dim=[2, 3], keepdim=True)
         feat_sig = output.std(dim=[2, 3], keepdim=True)
