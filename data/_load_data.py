@@ -50,7 +50,7 @@ def get_train_val_datasets():
 def get_lodo_splits():
     """Returns a list of datasets for Leave-One-Domain-Out (LoDO) cross-validation."""
     dataset = get_dataset(
-        name='VLCS',
+        name='PACS',
         root_dir='/mnt/data/hahlers/datasets',
         test_domain=None,
         augment=None

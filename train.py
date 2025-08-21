@@ -107,11 +107,11 @@ class TrainingFramework:
         """Initialises the best model with given hyperparameters"""
         model = resnet50(
             num_classes=len(self.class_names),
-            #num_domains=len(DOMAIN_NAMES['PACS']),
-            num_domains=len(DOMAIN_NAMES['VLCS']),
+            num_domains=len(DOMAIN_NAMES['PACS']),
+            #num_domains=len(DOMAIN_NAMES['VLCS']),
             domain_names=self.domain_names,
             batch_size=hparams['batch_size'],
-            use_mixstyle=False,
+            use_mixstyle=True,
             dropout_p=hparams['dropout'],
             pretrained=True
         )
@@ -541,7 +541,7 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_root', type=str, default="/mnt/data/hahlers/datasets")
-    parser.add_argument('--hparam_file', type=str, default="configs/vlcs/global_config.yaml")
+    parser.add_argument('--hparam_file', type=str, default="configs/pacs/global_config.yaml")
     parser.add_argument('--num_epochs', type=int, default=50, help='Number of training epochs')
     parser.add_argument('--domains', type=int, default=4, help='Number of domains')
     args = parser.parse_args()
@@ -571,14 +571,14 @@ def main():
         os.makedirs(seed_config['save_dir'], exist_ok=True)
         os.makedirs(seed_config['vis_dir'], exist_ok=True)
 
-        #full_dataset = PACS(root=seed_config['data_root'], test_domain=None)
-        full_dataset = VLCS(root=seed_config['data_root'], test_domain=None)
+        full_dataset = PACS(root=seed_config['data_root'], test_domain=None)
+        #full_dataset = VLCS(root=seed_config['data_root'], test_domain=None)
         
         trainer = TrainingFramework(
             config=seed_config,
             dataset=full_dataset,
             class_names=full_dataset.classes,
-            domain_names=DOMAIN_NAMES["VLCS"]
+            domain_names=DOMAIN_NAMES["PACS"]
         )
         
         results = trainer.run(args.hparam_file)
@@ -591,7 +591,7 @@ def main():
     final_visualizer = Visualizer(
         config=None,
         class_names=full_dataset.classes,
-        domain_names=DOMAIN_NAMES["VLCS"],
+        domain_names=DOMAIN_NAMES["PACS"],
         vis_dir="experiments/train_results/visualizations/final"
     )
     test_stats = final_visualizer.calculate_test_statistics(all_results)
@@ -621,11 +621,11 @@ def main():
 
 def extract_stats_for_all_seeds():
     seeds = [42, 7, 0]
-    domain_names = DOMAIN_NAMES["VLCS"]  # Annahme: ['Caltech', 'Labelme', 'Pascal', 'Sun']
-    dataset = VLCS(root="/mnt/data/hahlers/datasets", test_domain=None)
+    domain_names = DOMAIN_NAMES["PACS"]  # Annahme: ['Caltech', 'Labelme', 'Pascal', 'Sun']
+    dataset = PACS(root="/mnt/data/hahlers/datasets", test_domain=None)
     
     print(f"\n=== Processing seed {0} ===")
-    save_dir = f"experiments/train_results/vlcs_woMS/saved_models/seed_{0}"
+    save_dir = f"experiments/train_results/pacs_woMS/saved_models/seed_{0}"
      
     for domain_idx, domain_name in enumerate(domain_names):
         model_path = os.path.join(save_dir, f"best_fold_{domain_name}.pt")
@@ -647,7 +647,7 @@ def extract_stats_for_all_seeds():
                 'log_dir': f"experiments/train_results/logs/seed_{0}",
                 'vis_dir': f"experiments/train_results/visualizations/seed_{0}"
             },
-            dataset=VLCS(root="/mnt/data/hahlers/datasets", test_domain=None),
+            dataset=PACS(root="/mnt/data/hahlers/datasets", test_domain=None),
             class_names=dataset.classes,
             domain_names=domain_names
         )
@@ -658,7 +658,7 @@ def extract_stats_for_all_seeds():
             domain_name=domain_name,
             model_class=resnet50,
             model_args={
-                'num_classes': 5,
+                'num_classes': 7,
                 'num_domains': len(domain_names),
                 'batch_size': 64,  # Muss mit Trainings-Batchsize übereinstimmen
                 'use_mixstyle': False,
