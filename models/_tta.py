@@ -409,6 +409,8 @@ class TTAClassifier(nn.Module):
 
         cross_domain_variance_all, cross_domain_disagreement_all = [], []
         cross_domain_real_class_var_all = []
+        per_sample_uncertainty, per_sample_correct = [], []
+        sample_count = 0
 
         try:
             with torch.no_grad():
@@ -451,6 +453,7 @@ class TTAClassifier(nn.Module):
                         labels_np = labels.cpu().numpy()
                         orig_real_class_probs = orig_probs.cpu().numpy()[np.arange(len(labels_np)), labels_np]
                         original_results['real_class_probs'].append(orig_real_class_probs)
+                        correct_vec = (orig_preds == labels).long().cpu().numpy()
 
                     #batch_aug_preds = []
                     #probs_per_augmentation = []
@@ -522,11 +525,16 @@ class TTAClassifier(nn.Module):
                         per_class_var = np.var(all_probs, axis=0)
                         per_sample_var = per_class_var.mean(axis=1)
                         cross_domain_variance_all.extend(per_sample_var.tolist())
+
+                        #per_sample_uncertainty.extend(per_sample_var.tolist())
+                        per_sample_correct.extend(correct_vec.tolist())
                         
                         if len(real_class_probs_per_domain) > 0:
                             real_class_probs_arr = np.stack(real_class_probs_per_domain, axis=0)
                             real_class_var = np.var(real_class_probs_arr, axis=0)
                             cross_domain_real_class_var_all.extend(real_class_var.tolist())
+
+                            per_sample_uncertainty.extend(real_class_var.tolist())
 
                         preds_arr = np.stack(preds_per_augmentation, axis=0)
                         batch_disagreements = []
@@ -641,9 +649,118 @@ class TTAClassifier(nn.Module):
         results['cross_domain_mean_disagreement'] = mean_cross_disagreement
         results['cross_domain_mean_real_class_var'] = mean_cross_real_class_var
 
+        if per_sample_uncertainty and per_sample_correct:
+            scores = np.asarray(per_sample_uncertainty)
+            correct = np.asarray(per_sample_correct).astype(np.float32)
+            N = len(scores)
+
+            drop_grid = np.arange(0,95+1,5)
+
+            sort_idx = np.argsort(scores)[::-1]
+            correct_sorted = correct[sort_idx]
+            curve_uncert = []
+
+            for p in drop_grid:
+                k = int(np.floor(p / 100.0 * N))
+                remain = correct_sorted[k:]
+                acc = float(remain.mean()) if remain.size > 0 else np.nan
+                curve_uncert.append(acc)
+
+            n_trials = getattr(self, 'random_trials', None) or 1000
+            """
+            band_mode = getattr(self, 'random_band', None) or 'sigma'
+
+            mu, sigma = scores.mean(), scores.std()
+            if band_mode == 'sigma':
+                eligible = np.where((scores >= mu - sigma) & (scores <= mu + sigma))[0]
+            else:
+                eligible = np.arange(N)
+    
+            curve_rand_mean, curve_rand_std = [], []
+            rng = np.random.default_rng(seed=self.seed)
+
+            all_idx = np.arange(N)
+            rand_accs_per_percent = {int(p): [] for p in drop_grid.tolist()}
+
+            for _ in range(n_trials):
+                for p in drop_grid:
+                    k = int(np.floor(p / 100.0 * N))
+                    if k == 0:
+                        rand_accs_per_percent[int(p)].append(float(correct.mean()))
+                        continue
+                    #k_eff = min(k, len(eligible))
+                    #if k_eff > 0:
+                     #   chosen = rng.choice(eligible, size=k_eff, replace=False)
+                    #else:
+                     #   chosen = np.array([], dtype=int)
+                    #trial_accs = []
+                    #chosen = rng.choice(eligible, size=k_eff, replace=False) if k_eff > 0 else np.array([], dtype=int)
+                    if band_mode == 'sigma':
+                        if k <= len(eligible):
+                            dropped = rng.choice(eligible, size=k, replace=False) if k > 0 else np.array([], dtype=int)
+                        else:
+                            rest = np.setdiff1d(all_idx, eligible, assume_unique=False)
+                            extra = min(k - len(eligible), len(rest))
+                            extra = min(extra, len(rest))
+                            topup = rng.choice(rest, size=extra, replace=False) if extra > 0 else np.array([], dtype=int)
+                            dropped = np.concatenate([eligible, topup]) if len(eligible) > 0 else topup
+                    else:
+                        dropped = rng.choice(all_idx, size=k, replace=False) if k > 0 else np.array([], dtype=int)
+                    
+                    #dropped = random_ids[:k]                  
+                    mask = np.ones(N, dtype=bool)
+                    mask[dropped] = False
+                    remain_acc = float(correct[mask].mean()) if mask.sum() > 0 else np.nan
+                    #trial_accs.append(remain_acc)
+                    rand_accs_per_percent[int(p)].append(remain_acc)
+
+            for p in drop_grid:
+                values = rand_accs_per_percent[int(p)]
+                curve_rand_mean.append(float(np.nanmean(values)))
+                curve_rand_std.append(float(np.nanstd(values)))
+            """
+            rng = np.random.default_rng(seed=self.seed)
+
+            rand_accs_per_percent = {int(p): [] for p in drop_grid.tolist()}
+
+            for _ in range(n_trials):
+                for p in drop_grid:
+                    perm = rng.permutation(N)
+                    k = int(np.floor((p / 100.0) * N))
+                    if k == 0:
+                        keep_ids = perm
+                    else:
+                        keep_ids = perm[k:]
+
+                    acc = float(correct[keep_ids].mean()) if keep_ids.size > 0 else np.nan
+                    rand_accs_per_percent[int(p)].append(acc)
+
+            
+            curve_rand_mean = [float(np.nanmean(rand_accs_per_percent[int(p)])) for p in drop_grid]
+            curve_rand_std = [float(np.nanstd(rand_accs_per_percent[int(p)])) for p in drop_grid]
+            
+            results['drop_curve'] = {
+                'percent': drop_grid.tolist(),
+                'uncertainty_curve': curve_uncert,
+                'random_within1sigma_mean': curve_rand_mean,
+                'random_within1sigma_std': curve_rand_std,
+                'random_samples': {int(p): [float(a) for a in rand_accs_per_percent[int(p)]] for p in drop_grid},
+                'random_trials': int(n_trials)
+            }
+
         if self.visualizer and viz_data['first_batch_processed']:
             try:
                 """
+                self.visualizer.plot_uncertainty_dropping(
+                    drop_grid=drop_grid,
+                    curve_uncert=curve_uncert,
+                    curve_rand_mean=curve_rand_mean,
+                    curve_rand_std=curve_rand_std,
+                    test_domain=self.test_domain,
+                    mode=self.mode,
+                    seed=self.seed
+                )
+                
                 self.visualizer.visualize_tta_tsne(
                     original_features=viz_data['features']['original'],
                     augmented_features={k: torch.cat(v) for k, v in viz_data['features']['augmented'].items()},
@@ -716,6 +833,13 @@ class TTAExperiment:
         self.results_file = os.path.join(
             config['output_dir'],
             f"tta_results_all_domains_{timestamp}.txt"
+        )
+
+        self.visualizer = Visualizer(
+            class_names=self.class_names,
+            domain_names=self.domain_names,
+            config={},
+            vis_dir=self.config['output_dir']
         )
 
 
@@ -840,6 +964,34 @@ class TTAExperiment:
                             }
                             if self.config['verbose']:
                                 print(error_msg)
+
+                    all_drop_curves = []
+                    for seed in self.config['seeds']:
+                        seed_res = results['results'][test_domain][mode].get(str(seed), {})
+                        if 'drop_curve' in seed_res:
+                            all_drop_curves.append(seed_res['drop_curve'])
+
+                    if all_drop_curves:
+                        drop_grid = all_drop_curves[0]['percent']
+                        
+                        unc_curves = np.array([dc['uncertainty_curve'] for dc in all_drop_curves])
+                        rand_mean_curves = np.array([dc['random_within1sigma_mean'] for dc in all_drop_curves])
+                        rand_std_curves = np.array([dc['random_within1sigma_std'] for dc in all_drop_curves])
+
+                        mean_unc = unc_curves.mean(axis=0)
+                        mean_rand = np.nanmean(rand_mean_curves, axis=0)
+                        var_means = np.nanvar(rand_mean_curves, axis=0, ddof=0)
+                        mean_seed_vars = np.nanmean(rand_std_curves**2, axis=0)
+                        pooled_std = np.sqrt(var_means + mean_seed_vars)
+
+                        self.visualizer.plot_uncertainty_dropping(
+                            drop_grid=drop_grid,
+                            curve_uncert=mean_unc.tolist(),
+                            curve_rand_mean=mean_rand.tolist(),
+                            curve_rand_std=pooled_std.tolist(),
+                            test_domain=test_domain,
+                            mode=mode
+                        )
 
                     if target_accs:
                         all_accs = []
@@ -980,6 +1132,9 @@ class TTAExperiment:
                 'mean_real_class_variance': results.get('cross_domain_mean_real_class_var')
             }
         }
+
+        if 'drop_curve' in results:
+            processed_results['drop_curve'] = results['drop_curve']
     
         for domain, metrics in results['target_domains'].items():
             processed_results[domain] = {
@@ -1050,6 +1205,11 @@ def parse_args() -> Dict[str, Any]:
                         help='Output directory for results')
     parser.add_argument('--verbose', action='store_true', 
                        help='Enable verbose logging')
+    parser.add_argument('--random_trials', type=int, default=1000,
+                    help='Number of random extractions for the random baseline')
+    parser.add_argument('--random_band', type=str, default='none', choices=['sigma','none'],
+                    help='Restrict random removals to ±1σ band (sigma) or over all samples (none)')
+
     
     args = parser.parse_args()
     
@@ -1066,7 +1226,9 @@ def parse_args() -> Dict[str, Any]:
         'output_dir': args.output_dir,
         'verbose': args.verbose,
         'num_classes': args.num_classes,
-        'modes': args.modes
+        'modes': args.modes,
+        'random_trials': args.random_trials,
+        'random_band': args.random_band
     }
 
 

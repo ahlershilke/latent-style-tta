@@ -1854,3 +1854,28 @@ class Visualizer:
         save_path = os.path.join(self.vis_dir, "test_stats", "prediction_consistency.png")
         plt.savefig(save_path)
         plt.close()
+
+    def plot_uncertainty_dropping(
+            self,
+            drop_grid,
+            curve_uncert,
+            curve_rand_mean,
+            curve_rand_std,
+            test_domain,
+            mode):
+
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.plot(drop_grid, curve_uncert, marker='o', linestyle='--', label='Uncertainty criteria')
+        ax.plot(drop_grid, curve_rand_mean, linestyle='-.', label='Random criteria')
+        lower = np.array(curve_rand_mean) - np.array(curve_rand_std)
+        upper = np.array(curve_rand_mean) + np.array(curve_rand_std)
+        ax.fill_between(drop_grid, lower, upper, alpha=0.15)
+        ax.set_xlabel('Percentage of dropped cases')
+        ax.set_ylabel('Accuracy')
+        ax.set_ylim(0.7, 1.00)
+        ax.set_title(f'{test_domain} - {mode}')
+        ax.legend(loc='lower left')
+        plt.tight_layout()
+        save_path = os.path.join(self.vis_dir, "training_curves", f'perf_vs_drop_{test_domain}_{mode}.png')
+        fig.savefig(save_path, dpi=200)
+        plt.close(fig)
