@@ -649,6 +649,7 @@ class TTAClassifier(nn.Module):
         results['cross_domain_mean_disagreement'] = mean_cross_disagreement
         results['cross_domain_mean_real_class_var'] = mean_cross_real_class_var
 
+        # random drop curve
         if per_sample_uncertainty and per_sample_correct:
             scores = np.asarray(per_sample_uncertainty)
             correct = np.asarray(per_sample_correct).astype(np.float32)
@@ -667,58 +668,6 @@ class TTAClassifier(nn.Module):
                 curve_uncert.append(acc)
 
             n_trials = getattr(self, 'random_trials', None) or 1000
-            """
-            band_mode = getattr(self, 'random_band', None) or 'sigma'
-
-            mu, sigma = scores.mean(), scores.std()
-            if band_mode == 'sigma':
-                eligible = np.where((scores >= mu - sigma) & (scores <= mu + sigma))[0]
-            else:
-                eligible = np.arange(N)
-    
-            curve_rand_mean, curve_rand_std = [], []
-            rng = np.random.default_rng(seed=self.seed)
-
-            all_idx = np.arange(N)
-            rand_accs_per_percent = {int(p): [] for p in drop_grid.tolist()}
-
-            for _ in range(n_trials):
-                for p in drop_grid:
-                    k = int(np.floor(p / 100.0 * N))
-                    if k == 0:
-                        rand_accs_per_percent[int(p)].append(float(correct.mean()))
-                        continue
-                    #k_eff = min(k, len(eligible))
-                    #if k_eff > 0:
-                     #   chosen = rng.choice(eligible, size=k_eff, replace=False)
-                    #else:
-                     #   chosen = np.array([], dtype=int)
-                    #trial_accs = []
-                    #chosen = rng.choice(eligible, size=k_eff, replace=False) if k_eff > 0 else np.array([], dtype=int)
-                    if band_mode == 'sigma':
-                        if k <= len(eligible):
-                            dropped = rng.choice(eligible, size=k, replace=False) if k > 0 else np.array([], dtype=int)
-                        else:
-                            rest = np.setdiff1d(all_idx, eligible, assume_unique=False)
-                            extra = min(k - len(eligible), len(rest))
-                            extra = min(extra, len(rest))
-                            topup = rng.choice(rest, size=extra, replace=False) if extra > 0 else np.array([], dtype=int)
-                            dropped = np.concatenate([eligible, topup]) if len(eligible) > 0 else topup
-                    else:
-                        dropped = rng.choice(all_idx, size=k, replace=False) if k > 0 else np.array([], dtype=int)
-                    
-                    #dropped = random_ids[:k]                  
-                    mask = np.ones(N, dtype=bool)
-                    mask[dropped] = False
-                    remain_acc = float(correct[mask].mean()) if mask.sum() > 0 else np.nan
-                    #trial_accs.append(remain_acc)
-                    rand_accs_per_percent[int(p)].append(remain_acc)
-
-            for p in drop_grid:
-                values = rand_accs_per_percent[int(p)]
-                curve_rand_mean.append(float(np.nanmean(values)))
-                curve_rand_std.append(float(np.nanstd(values)))
-            """
             rng = np.random.default_rng(seed=self.seed)
 
             rand_accs_per_percent = {int(p): [] for p in drop_grid.tolist()}
@@ -734,7 +683,6 @@ class TTAClassifier(nn.Module):
 
                     acc = float(correct[keep_ids].mean()) if keep_ids.size > 0 else np.nan
                     rand_accs_per_percent[int(p)].append(acc)
-
             
             curve_rand_mean = [float(np.nanmean(rand_accs_per_percent[int(p)])) for p in drop_grid]
             curve_rand_std = [float(np.nanstd(rand_accs_per_percent[int(p)])) for p in drop_grid]
@@ -747,73 +695,8 @@ class TTAClassifier(nn.Module):
                 'random_samples': {int(p): [float(a) for a in rand_accs_per_percent[int(p)]] for p in drop_grid},
                 'random_trials': int(n_trials)
             }
-
-        if self.visualizer and viz_data['first_batch_processed']:
-            try:
-                """
-                self.visualizer.plot_uncertainty_dropping(
-                    drop_grid=drop_grid,
-                    curve_uncert=curve_uncert,
-                    curve_rand_mean=curve_rand_mean,
-                    curve_rand_std=curve_rand_std,
-                    test_domain=self.test_domain,
-                    mode=self.mode,
-                    seed=self.seed
-                )
-                
-                self.visualizer.visualize_tta_tsne(
-                    original_features=viz_data['features']['original'],
-                    augmented_features={k: torch.cat(v) for k, v in viz_data['features']['augmented'].items()},
-                    raw_train_data=viz_data['raw_training_data'],
-                    test_domain=self.test_domain
-                )
-                
-                self.visualizer.visualize_tta_gradcam(
-                    model=self.model,
-                    original_img=viz_data['sample_imgs']['original'],
-                    augmented_imgs=viz_data['sample_imgs']['augmented']
-                )
-                """
-                self.visualizer.plot_tta_confusion_matrices(
-                    original_results={
-                        'preds': np.concatenate(original_results['all_preds']),
-                        'labels': np.concatenate(original_results['all_labels'])
-                    },
-                    augmented_results={
-                        domain: {
-                            'preds': np.concatenate(data['all_preds']),
-                            'labels': np.concatenate(data['all_labels'])
-                        }
-                        for domain, data in domain_results.items()
-                    }
-                )
-                self.visualizer.plot_confidence_intervals({
-                    'target_domains': {
-                        domain: {
-                            'all_probs': np.concatenate(data['all_probs'])
-                        }
-                        for domain, data in domain_results.items()
-                    }
-                })
-                """
-                if len(viz_data['sample_imgs']['original'].shape) == 3:
-                    self.visualizer.plot_feature_stats_heatmap(
-                        original_img=viz_data['sample_imgs']['original'],
-                        augmented_imgs=list(viz_data['sample_imgs']['augmented'].values())
-                    )
-                
-                self.visualizer.plot_prediction_consistency(
-                    original_probs=np.concatenate(viz_data['probs']['original']),
-                    augmented_probs=[
-                        np.concatenate(probs)
-                        for probs in viz_data['probs']['augmented'].values()
-                    ]
-                )
-                """
-            except Exception as e:
-                print(f"Visualization failed: {str(e)}")
-                if self.verbose:
-                    traceback.print_exc()
+            results['per_sample_uncertainty'] = per_sample_uncertainty
+            results['per_sample_correct'] = per_sample_correct
 
         return results
 
@@ -822,8 +705,8 @@ class TTAExperiment:
     def __init__(self, config):
         self.config = config
         self.seed_manager = SeedManager()
-        self.domain_names = DOMAIN_NAMES['PACS']
-        self.class_names = CLASS_NAMES['PACS']
+        self.domain_names = DOMAIN_NAMES[config['dataset']]
+        self.class_names = CLASS_NAMES[config['dataset']]
 
         self.all_results = defaultdict(lambda: defaultdict(dict))
 
@@ -876,10 +759,6 @@ class TTAExperiment:
             "average"
         ]
     
-    """
-    def get_all_modes(self):
-        return ["selective_0_1", "single_0", "average"]
-    """
         
     def run_all_domains(self):
         """Run TTA for all domains as test domains, maintaining both text logs and JSON results"""
@@ -992,6 +871,91 @@ class TTAExperiment:
                             test_domain=test_domain,
                             mode=mode
                         )
+
+                        p = np.asarray(drop_grid, dtype=np.float64) / 100.0
+
+                        auc_mean_curve = float(np.trapezoid(mean_unc, p))
+                        auc_random_mean_curve = float(np.trapezoid(mean_rand, p))
+                        gain_abs_mean_curve = float(auc_mean_curve - auc_random_mean_curve)
+                        gain_rel_mean_curve = (
+                            float(gain_abs_mean_curve / auc_random_mean_curve)
+                            if auc_random_mean_curve != 0 else np.nan
+                        )
+                        auc_unc_seeds = [float(np.trapezoid(curve, p)) for curve in unc_curves]
+                        auc_rand_seeds = [float(np.trapezoid(curve, p)) for curve in rand_mean_curves]
+                        gain_abs_seeds = [u - r for u, r in zip(auc_unc_seeds, auc_rand_seeds)]
+                        gain_rel_seeds = [
+                            (g / r) if r != 0 else np.nan
+                            for g, r in zip(gain_abs_seeds, auc_rand_seeds)
+                        ]
+
+                        mean_auc = float(np.mean(auc_unc_seeds))
+                        std_auc = float(np.std(auc_unc_seeds))
+                        mean_gain_abs = float(np.mean(gain_abs_seeds))
+                        std_gain_abs = float(np.std(gain_abs_seeds))
+
+                        results['results'][test_domain][mode]['drop_curve_metrics'] = {
+                            'auad_from_mean_curve': auc_mean_curve,
+                            'auad_random_from_mean_curve': auc_random_mean_curve,
+                            'auad_gain_abs_from_mean_curve': gain_abs_mean_curve,
+                            'auad_gain_rel_from_mean_curve': gain_rel_mean_curve,
+                            'auad_mean': mean_auc,
+                            'auad_std': std_auc,
+                            'auad_gain_abs_mean': mean_gain_abs,
+                            'auad_gain_abs_std': std_gain_abs,
+                        }
+
+                        # Write to txt file
+                        txt_f.write("\nDrop-curve metrics (averaged across seeds):\n")
+                        txt_f.write(f"  AUAD (uncertainty curve): {mean_auc:.4f} ± {std_auc:.4f}\n")
+                        txt_f.write(f"  Gain over random (abs):   {mean_gain_abs:.4f} ± {std_gain_abs:.4f}\n")
+                        txt_f.write(f"  AUAD from mean curve:     {auc_mean_curve:.4f}\n")
+                        txt_f.write(f"  Gain from mean curve:     {gain_abs_mean_curve:.4f}\n")
+
+                    
+                    all_u, all_c = [], []
+                    auroc_per_seed = []
+
+                    for seed in self.config['seeds']:
+                        seed_res = results['results'][test_domain][mode].get(str(seed), {})
+                        u = seed_res.get('per_sample_uncertainty')
+                        c = seed_res.get('per_sample_correct')
+                        if u is None or c is None:
+                            continue
+                        u = np.asarray(u, dtype=np.float64)
+                        c = np.asarray(c, dtype=np.int32)
+
+                        is_error = 1 - c
+                        auc_seed = self._auroc_from_scores_numpy(u, is_error)
+                        if np.isfinite(auc_seed):
+                            auroc_per_seed.append(auc_seed)
+                        all_u.append(u)
+                        all_c.append(c)
+
+                    if len(all_u) > 0:
+                        u_pooled = np.concatenate(all_u, axis=0)
+                        c_pooled = np.concatenate(all_c, axis=0)
+                        auroc_pooled = self._auroc_from_scores_numpy(u_pooled, 1-c_pooled)
+                    else:
+                        auroc_pooled = float('nan')
+                    
+                    if auroc_per_seed:
+                        auroc_mean = float(np.mean(auroc_per_seed))
+                        auroc_std = float(np.std(auroc_per_seed))
+                    else:
+                        auroc_mean = float('nan')
+                        auroc_std = float('nan')
+
+                    results['results'][test_domain][mode]['variance_auroc'] = {
+                        'per_seed': auroc_per_seed,
+                        'mean': auroc_mean,
+                        'std': auroc_std,
+                        'pooled': auroc_pooled
+                    }
+                    
+                    txt_f.write("\nVariance as error detector (AUROC):\n")
+                    txt_f.write(f"  AUROC (per-seed): mean {auroc_mean:.4f} ± {auroc_std:.4f}\n")
+                    txt_f.write(f"  AUROC (pooled over seeds): {auroc_pooled:.4f}\n")                 
 
                     if target_accs:
                         all_accs = []
@@ -1135,6 +1099,10 @@ class TTAExperiment:
 
         if 'drop_curve' in results:
             processed_results['drop_curve'] = results['drop_curve']
+
+        if 'per_sample_uncertainty' in results and 'per_sample_correct' in results:
+            processed_results['per_sample_uncertainty'] = results['per_sample_uncertainty']
+            processed_results['per_sample_correct'] = results['per_sample_correct']
     
         for domain, metrics in results['target_domains'].items():
             processed_results[domain] = {
@@ -1179,24 +1147,60 @@ class TTAExperiment:
         with open(os.path.join(self.config['output_dir'], filename), 'w') as f:
             json.dump(results, f, indent=2)
 
+    
+    @staticmethod
+    def _auroc_from_scores_numpy(scores: np.ndarray, is_error: np.ndarray) -> float:
+        """
+        AUROC between scores and binary labels (is_error: 1=incorrect, 0=correct).
+        Tie-aware via average ranks. Returns np.nan if only one class present.
+        """
+        scores = np.asarray(scores, dtype=np.float64)
+        y = np.asarray(is_error, dtype=np.int32)
+        P = int((y == 1).sum())
+        N = int((y == 0).sum())
+        if P == 0 or N == 0:
+            return float('nan')
+
+        # ranks with tie handling (average ranks)
+        order = np.argsort(scores)
+        ranks = np.empty_like(order, dtype=np.float64)
+        ranks[order] = np.arange(1, len(scores) + 1, dtype=np.float64)
+
+        # average ranks for ties
+        s_sorted = scores[order]
+        i = 0
+        while i < len(scores):
+            j = i + 1
+            while j < len(scores) and s_sorted[j] == s_sorted[i]:
+                j += 1
+            if j - i > 1:
+                avg = (i + 1 + j) / 2.0  # average of (i+1) .. j
+                ranks[order[i:j]] = avg
+            i = j
+
+        # Mann–Whitney U formulation
+        rank_pos_sum = ranks[y == 1].sum()
+        auc = (rank_pos_sum - P * (P + 1) / 2.0) / (P * N)
+        return float(auc)
+
 
 def parse_args() -> Dict[str, Any]:
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description='TTA Experiment Pipeline')
     
     # Basic paths
-    parser.add_argument('--models_root_path', type=str, default='./experiments/train_results/pacs_woMS/saved_models', 
+    parser.add_argument('--models_root_path', type=str, default='./experiments/train_results/vlcs_woMS/saved_models', 
                         help='Root path to trained models (contains seed_X folders)')
     parser.add_argument('--data_dir', type=str, default='/mnt/data/hahlers/datasets', 
                         help='Root directory for dataset')
     parser.add_argument('--dataset', type=str, default='PACS', 
                         help='Dataset name: PACS, VLCS')
     parser.add_argument('--num_classes', type=int, default=7,
-                        help='Number of classes for used Dataset; PACS: 7, VLCS: 5')
+                        help='Number of classes for used Datasets; PACS: 7, VLCS: 5')
     
     # Experiment parameters
     parser.add_argument('--num_augments', type=int, default=3, 
-                       help='Number of augmentations per sample')
+                       help='Number of augmentations per sample (number of training domains)')
     parser.add_argument('--modes', nargs='+', type=str, default=['single', 'selective', 'average'],
                         help='Modes to run: single, selective, average')
     parser.add_argument('--seeds', nargs='+', type=int, default=[42, 7, 0],

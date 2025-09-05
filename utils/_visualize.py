@@ -1872,10 +1872,128 @@ class Visualizer:
         ax.fill_between(drop_grid, lower, upper, alpha=0.15)
         ax.set_xlabel('Percentage of dropped cases')
         ax.set_ylabel('Accuracy')
-        ax.set_ylim(0.7, 1.00)
+        if test_domain == "LabelMe":
+            ax.set_ylim(0.3, 1.0)
+        elif test_domain == "SUN09" or test_domain == "sketch":
+            ax.set_ylim(0.6, 1.0)
+        elif test_domain == "Caltech101" or test_domain == "photo":
+            ax.set_ylim(0.9, 1.0)
+        else:
+            ax.set_ylim(0.7, 1.0)
         ax.set_title(f'{test_domain} - {mode}')
         ax.legend(loc='lower left')
         plt.tight_layout()
         save_path = os.path.join(self.vis_dir, "training_curves", f'perf_vs_drop_{test_domain}_{mode}.png')
         fig.savefig(save_path, dpi=200)
         plt.close(fig)
+
+    
+    def plot_calibration_vs_variance(
+        self,
+        per_sample_uncertainty,
+        per_sample_correct,
+        test_domain: str = None,
+        mode: str = None,
+        nbins: int = 10,
+        save_dir: str = None,
+        filename: str = None,
+        show_scatter: bool = False,
+        scatter_frac: float = 0.1,
+        random_state: int = 0,
+        ):
+        u = np.asarray(per_sample_uncertainty, dtype=np.float64)
+        c = np.asarray(per_sample_correct, dtype=np.float64)
+
+        if u.ndim != 1 or c.ndim != 1 or u.size != c.size:
+            raise ValueError("per_sample_uncertainty und per_sample_correct have to be 1D and same length.")
+
+        valid = np.isfinite(u) & np.isfinite(c)
+        u, c = u[valid], c[valid]
+        if u.size == 0:
+            raise ValueError("No valid data (NaN/inf).")
+
+        umax = np.max(u)
+        if umax <= 0:
+            umax = 1e-12
+
+        bin_edges = np.linspace(0.0, umax, nbins + 1)
+        bin_idx = np.digitize(u, bin_edges, right=True)
+
+        acc_per_bin = np.full(nbins, np.nan, dtype=np.float64)
+        n_per_bin   = np.zeros(nbins, dtype=np.int64)
+        ci95_hw     = np.full(nbins, np.nan, dtype=np.float64)
+
+        for i in range(1, nbins + 1):
+            mask = (bin_idx == i)
+            n = int(np.sum(mask))
+            n_per_bin[i - 1] = n
+            if n > 0:
+                p = float(np.mean(c[mask]))
+                acc_per_bin[i - 1] = p
+                se = np.sqrt(max(p * (1.0 - p), 0.0) / n)
+                ci95_hw[i - 1] = 1.96 * se
+
+        bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+        fig, ax = plt.subplots(figsize=(6.0, 4.0))
+        m = np.isfinite(acc_per_bin)
+        ax.errorbar(
+            bin_centers[m],
+            acc_per_bin[m],
+            yerr=ci95_hw[m],
+            fmt='o-',
+            capsize=3,
+            linewidth=1.5,
+            markersize=4,
+        )
+
+        if show_scatter:
+            rng = np.random.default_rng(random_state)
+            n_all = u.size
+            k = int(np.clip(np.round(scatter_frac * n_all), 0, n_all))
+            if k > 0:
+                idx = rng.choice(n_all, size=k, replace=False)
+                ax.scatter(u[idx], c[idx], s=8, alpha=0.2)
+
+        title_parts = ["Accuracy vs. per-sample variance"]
+        if test_domain: title_parts.append(f"Test: {test_domain}")
+        if mode:        title_parts.append(f"Mode: {mode}")
+        ax.set_title(" | ".join(title_parts))
+        ax.set_xlabel("Per-sample variance (uncertainty)")
+        ax.set_ylabel("Accuracy")
+        ax.set_ylim(-0.05, 1.05)
+        ax.grid(True, linestyle=':', linewidth=0.8)
+
+        if save_dir is None:
+            save_dir = getattr(self, "vis_dir", None) or os.getcwd()
+        os.makedirs(save_dir, exist_ok=True)
+
+        if filename is None:
+            suffix = []
+            if test_domain: suffix.append(test_domain)
+            if mode:        suffix.append(mode)
+            base = "reliability_vs_variance" + ("_" + "_".join(suffix) if suffix else "")
+            filename = base + ".png"
+
+        fig_path = os.path.join(save_dir, filename)
+        fig.tight_layout()
+        fig.savefig(fig_path, dpi=200)
+        plt.close(fig)
+
+        csv_path = os.path.join(save_dir, os.path.splitext(filename)[0] + "_binned.csv")
+        try:
+            import csv
+            with open(csv_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["bin_left", "bin_right", "bin_center", "n", "acc", "ci95_halfwidth"])
+                for i in range(nbins):
+                    writer.writerow([
+                        f"{bin_edges[i]:.10g}",
+                        f"{bin_edges[i+1]:.10g}",
+                        f"{bin_centers[i]:.10g}",
+                        int(n_per_bin[i]),
+                        "" if not np.isfinite(acc_per_bin[i]) else f"{acc_per_bin[i]:.10g}",
+                        "" if not np.isfinite(ci95_hw[i]) else f"{ci95_hw[i]:.10g}",
+                    ])
+        except Exception:
+            pass
