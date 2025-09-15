@@ -1,6 +1,7 @@
 import os
 import json
 import yaml
+import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -14,7 +15,7 @@ from models import resnet18, resnet34, resnet50, resnet101
 from data._datasets import DOMAIN_NAMES
 from tqdm import tqdm
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 
 class EarlyStopping:
@@ -36,6 +37,7 @@ class EarlyStopping:
         self.early_stop = False
         self.val_loss_min = float('inf')
 
+
     def __call__(self, val_loss, model):
         score = -val_loss
 
@@ -54,7 +56,7 @@ class EarlyStopping:
             self.counter = 0
 
     def save_checkpoint(self, val_loss, model):
-        '''Saves model when validation loss decreases.'''
+        """Saves model when validation loss decreases."""
         if self.verbose:
             self.trace_func(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}). Saving model...')
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -63,7 +65,10 @@ class EarlyStopping:
 
 
 class HP_Tuner:
-    def __init__(self, train_data, val_data, num_classes: int, num_domains: int, n_trials=50, save_dir="experiments/hp_results", fold_info: Dict[str, Any] = None):
+    def __init__(self, train_data, val_data, num_classes: int, num_domains: int, 
+                 n_trials=50, save_dir="experiments/hp_results", 
+                 fold_info: Dict[str, Any] = None,
+                 domain_names: List[str] = None):
         """
         Initialize the Hyperparameter Tuner
         
@@ -82,38 +87,24 @@ class HP_Tuner:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.save_dir = save_dir
         self.fold_info = fold_info
+        self.domain_names = domain_names
 
-    def create_model(self, trial, verbose=False):
+
+    def create_model(self, params_or_trial, verbose=False):
         #model_type = trial.suggest_categorical("model_type", ["resnet18", "resnet34", "resnet50", "resnet101"])
         model_type = "resnet50"
-    
-        actual_layers = []
-        use_mixstyle = False
-        mixstyle_p = trial.suggest_float("mixstyle_p", 0.1, 0.9) if use_mixstyle else 0.0
-        mixstyle_alpha = trial.suggest_float("mixstyle_alpha", 0.1, 0.5) if use_mixstyle else 0.0
 
-        if use_mixstyle:
-            mixstyle_layers = trial.suggest_categorical("mixstyle_layers", [
-                    "layer1", "layer2", "layer3", "layer4",
-                    "layer1+layer2", "layer1+layer2+layer3", "layer1+layer3",
-                    "layer2+layer3", "all", "none"])
-        
-            if mixstyle_layers == "all":
-                actual_layers = ["layer1", "layer2", "layer3", "layer4"]
-            elif mixstyle_layers == "none":
-                actual_layers = []
-            else:
-                actual_layers = mixstyle_layers.split("+")
-    
-        dropout = trial.suggest_float("dropout", 0.0, 0.5)
+        is_trial = hasattr(params_or_trial, 'suggest_float')
+
+        dropout = (
+            params_or_trial.suggest_float("dropout", 0.0, 0.5)
+            if is_trial else params_or_trial.get("dropout", 0.2)
+        )
 
         model_kwargs = {
             "num_classes": self.num_classes,
             "num_domains": self.num_domains,
-            "use_mixstyle": use_mixstyle,
-            "mixstyle_layers": actual_layers,
-            "mixstyle_p": mixstyle_p,
-            "mixstyle_alpha": mixstyle_alpha,
+            "domain_names": self.domain_names,
             "dropout_p": dropout,
             "pretrained": True
         }
@@ -136,8 +127,6 @@ class HP_Tuner:
         model = self.create_model(trial)
         device = self.device
         model.to(device)
-
-        use_mixstyle = getattr(model, 'use_mixstyle', False)
     
         optimizer_name = trial.suggest_categorical("optimizer", ["Adam", "SGD", "AdamW"])
         if optimizer_name == "Adam":
@@ -212,7 +201,7 @@ class HP_Tuner:
                 inputs, labels, domain_idx = inputs.to(device), labels.to(device), domain_idx.to(device)
             
                 optimizer.zero_grad()
-                outputs = model(inputs, domain_idx) if use_mixstyle else model(inputs)
+                outputs = model(inputs, domain_idx=domain_idx)
                 loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
@@ -233,7 +222,7 @@ class HP_Tuner:
             accuracy = correct / total
             val_loss /= len(val_loader)
 
-            early_stopper(val_loss, model)  # OR early_stopper(-accuracy, model)
+            early_stopper(val_loss, model)
             if early_stopper.early_stop:
                 print(f"Early stopping triggered at epoch {epoch}")
                 break
@@ -277,6 +266,13 @@ class HP_Tuner:
                 trial = sorted_trials[i]
                 model = self.create_model(trial, verbose=False)
                 model.to(self.device)
+
+                checkpoint_path = os.path.join(checkpoints_dir, f"checkpoint_trial_{trial.number}.pt")
+                if os.path.exists(checkpoint_path):
+                    state_dict = torch.load(checkpoint_path, map_location=self.device)
+                    model.load_state_dict(state_dict, strict=False)
+                else:
+                    print(f"Checkpoint not found for trial {trial.number}. Saving untrained model.")
         
                 model_path = os.path.join(models_dir, f"top_{i+1}_model.pt")
                 torch.save({
@@ -344,25 +340,15 @@ class HP_Tuner:
 
         trial_data = trial.params.copy()
     
-        # Add fold info and accuracy
+        # add fold info and accuracy
         trial_data.update({
             **clean_params,
             'fold': self.fold_info['fold'],
             'test_domain': self.fold_info['test_domain'],
-            'val_acc': val_acc
+            'value': val_acc
         })
 
         all_params = [
-            'fold', 'test_domain', 'lr', 'batch_size', 'weight_decay', 
-            'optimizer', 'beta1', 'beta2', 'eps', 'momentum', 'nesterov',
-            'scheduler', 'step_size', 'gamma', 'T_max', 'eta_min',
-            'factor', 'patience', 'mixstyle_layers', 'mixstyle_p', 
-            'mixstyle_alpha', 'dropout', 'val_acc'
-        ]
-
-        use_mixstyle = getattr(model, 'use_mixstyle', False)
-        if not use_mixstyle:
-            all_params = [
                 'fold', 'test_domain', 'lr', 'batch_size', 'weight_decay', 
                 'optimizer', 'beta1', 'beta2', 'eps', 'momentum', 'nesterov',
                 'scheduler', 'step_size', 'gamma', 'T_max', 'eta_min',
@@ -387,7 +373,7 @@ class HP_Tuner:
         study.set_user_attr("fold", self.fold_info["fold"])
         study.set_user_attr("test_domain", self.fold_info["test_domain"])
 
-        with tqdm(total=self.n_trials, desc="Hyperparameter-Tuning", unit="trial") as pbar:
+        with tqdm(total=self.n_trials, desc="Hyperparameter Tuning", unit="trial") as pbar:
             def update_pbar(study, trial):
                 pbar.update(1)
                 pbar.set_postfix({
@@ -430,16 +416,17 @@ class HP_Tuner:
 
     def evaluate_model(self, model, test_loader):
         """Evaluate the model on the test set."""
+        model = model.to(self.device)
         model.eval()
         correct = 0
         total = 0
         total_loss = 0.0
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.CrossEntropyLoss().to(self.device)
 
         with torch.no_grad():
-            for inputs, labels, _ in test_loader:
-                inputs, labels = inputs.to(self.device), labels.to(self.device)
-                outputs = model(inputs)
+            for inputs, labels, domain_idx in test_loader:
+                inputs, labels, domain_idx = inputs.to(self.device), labels.to(self.device), domain_idx.to(self.device)
+                outputs = model(inputs, domain_idx=domain_idx)
                 total_loss += criterion(outputs, labels).item()
                 _, predicted = torch.max(outputs, 1)
                 total += labels.size(0)
@@ -451,79 +438,282 @@ class HP_Tuner:
     
 
     @staticmethod
-    def compute_global_best_params(save_dir: str, use_mixstyle: bool) -> Dict[str, Any]:
-        """
-        Calculates the average validation accuracy across all domains 
-        and saves the best global hyperparameters.
-    
-        Args:
-            save_dir: base directory where the results are saved
-    
-        Returns:
-            dict with the best global hyperparameters and their mean accuracy
-        """
+    def compute_global_best_params(save_dir: str, domain_names: List[str]) -> Dict[str, Any]:
+        try:
+            # load all trial data
+            all_trials = []
         
-        all_trials = []
-    
-        for fold_dir in Path(save_dir).glob("[0-9]"):  # search for directories named with single digit (0-9)
-            fold_num = fold_dir.name
-            trials_file = fold_dir / f"all_trials_fold_{fold_num}.csv"
-        
-            if trials_file.exists():
-                df = pd.read_csv(trials_file)
-                df["domain"] = DOMAIN_NAMES['PACS'][int(fold_num)]
-                all_trials.append(df)
+            for fold_dir in Path(save_dir).glob("[0-9]"):
+                fold_num = fold_dir.name
+                trials_file = fold_dir / f"all_trials_fold_{fold_num}.csv"
             
-        if not all_trials:
-            raise ValueError("Couldn't find domain results!")
-    
-        combined_df = pd.concat(all_trials)
-    
-        accuracy_col = 'value'
-        param_cols = ['lr', 'batch_size', 'weight_decay', 'optimizer',
-                      'scheduler', 'dropout', 'mixstyle_layers', 'mixstyle_p', 'mixstyle_alpha']
+                if trials_file.exists():
+                    df = pd.read_csv(trials_file)
+                    df["domain"] = domain_names[int(fold_num)]
+                    all_trials.append(df)
         
-        if use_mixstyle == False:
-            param_cols = ['lr', 'batch_size', 'weight_decay', 'optimizer', 'scheduler', 'dropout']
-        
-        missing_cols = [col for col in param_cols if col not in combined_df.columns]
-        if missing_cols:
-            raise ValueError(f"Missing parameter cols in the data: {missing_cols}")
-    
-        # mean, std and count of domains for each parameter combination
-        best_global = (
-            combined_df.groupby(param_cols)
-            [accuracy_col].agg(["mean", "std", "count"])
-            .sort_values("mean", ascending=False)
-            .reset_index()
-            .iloc[0]  # best parameter set (highest mean accuracy)
-        )
-        
-        best_per_fold = combined_df.loc[combined_df.groupby('domain')[accuracy_col].idxmax()]
-        std_over_folds = best_per_fold[accuracy_col].std()
+            combined_df = pd.concat(all_trials)
+            accuracy_col = 'value' if 'value' in combined_df.columns else 'val_acc'
 
-        global_mean = combined_df[accuracy_col].mean()
-        global_std = combined_df[accuracy_col].std()
-
-        global_results = {
-            "best_params": best_global[param_cols].to_dict(),
-            "mean_val_acc": float(best_global["mean"]),
-            "std_per_param": float(best_global["std"]),
-            "std_over_folds": float(std_over_folds),
-            "global_mean": float(global_mean),
-            "global_std": float(global_std),
-            "num_domains": int(best_global["count"])
-        }
-
-        with open(f"{save_dir}/best_global_params.json", "w") as f:
-            json.dump(global_results, f, indent=4)
-    
-        print(
-            f"\nGlobal best Hyperparameters: "
-            f"Mean Accuracy = {best_global['mean']:.2%} ± "
-            f"{best_global['std']:.2%} (per param) / "
-            f"{std_over_folds:.2%} (over folds)"
-        )
+            # Define parameter bins for continuous variables
+            combined_df['lr_bin'] = pd.cut(combined_df['lr'], 
+                                        bins=np.logspace(-5, -2, 6),
+                                        labels=['1e-5', '3e-5', '1e-4', '3e-4', '1e-3'])
         
-        return global_results
+            combined_df['weight_decay_bin'] = pd.cut(combined_df['weight_decay'],
+                                                bins=np.logspace(-5, -3, 5),
+                                                labels=['1e-5', '3e-5', '1e-4', '3e-4'])
+
+            grouping_cols = [
+                'lr_bin',
+                'batch_size',
+                'weight_decay_bin',
+                'optimizer',
+                'scheduler'
+            ]
+        
+            # group by binned parameters and calculate statistics
+            grouped = combined_df.groupby(grouping_cols, observed=False)[accuracy_col]
+            stats_df = grouped.agg(['mean', 'std', 'count']).reset_index().sort_values('mean', ascending=False)
+        
+            # select best parameter configuration
+            best_global = stats_df.iloc[0]
+        
+            # calculate statistics about the best parameters
+            best_mask = pd.Series(True, index=combined_df.index)
+            for col in grouping_cols:
+                best_mask &= (combined_df[col] == best_global[col])
+        
+            # create results dictionary with representative values
+            best_params = {
+                'lr': float(combined_df.loc[best_mask, 'lr'].median()),
+                'batch_size': int(best_global['batch_size']),
+                'weight_decay': float(combined_df.loc[best_mask, 'weight_decay'].median()),
+                'optimizer': best_global['optimizer'],
+                'scheduler': best_global['scheduler']
+            }
+            
+            # add optimizer-specific params
+            if best_params['optimizer'] in ['Adam', 'AdamW']:
+                best_params.update({
+                    'beta1': float(combined_df.loc[best_mask, 'beta1'].median()),
+                    'beta2': float(combined_df.loc[best_mask, 'beta2'].median()),
+                    'eps': float(combined_df.loc[best_mask, 'eps'].median())
+                })
+            
+            elif best_params['optimizer'] == 'SGD':
+                best_params.update({
+                    'momentum': float(combined_df.loc[best_mask, 'momentum'].median()),
+                    'nesterov': bool(combined_df.loc[best_mask, 'nesterov'].mode()[0])
+                })
+  
+            scheduler_type = best_params['scheduler']
+        
+            if scheduler_type == 'StepLR':
+                step_trials = combined_df[combined_df['scheduler'] == 'StepLR']
+                if not step_trials.empty:
+                    best_params.update({
+                        'step_size': int(step_trials['step_size'].median()),
+                        'gamma': float(step_trials['gamma'].median())
+                    })
+                else:
+                    best_params.update({
+                        'step_size': 10,
+                        'gamma': 0.1
+                    })
+                
+            elif scheduler_type == 'CosineAnnealing':
+                cosine_trials = combined_df[combined_df['scheduler'] == 'CosineAnnealing']
+                if not cosine_trials.empty:
+                    best_params.update({
+                        'T_max': int(cosine_trials['T_max'].median()),
+                        'eta_min': float(cosine_trials['eta_min'].median())
+                    })
+                else:
+                    best_params.update({
+                        'T_max': 30,
+                        'eta_min': 1e-4
+                    })
+                
+            elif scheduler_type == 'ReduceLROnPlateau':
+                plateau_trials = combined_df[combined_df['scheduler'] == 'ReduceLROnPlateau']
+                if not plateau_trials.empty:
+                    best_params.update({
+                        'patience': int(plateau_trials['patience'].median()),
+                        'factor': float(plateau_trials['factor'].median())
+                    })
+                else:
+                    best_params.update({
+                        'patience': 3,
+                        'factor': 0.1
+                    })
+
+            best_per_domain = combined_df.loc[combined_df.groupby('domain')[accuracy_col].idxmax()]
+            std_over_domains = best_per_domain[accuracy_col].std()
+
+            global_mean = combined_df[accuracy_col].mean()
+            global_std = combined_df[accuracy_col].std()
+        
+            # save and return results
+            global_results = {
+                "best_params": best_params,
+                "mean_val_acc": float(best_global['mean']),
+                "std_per_param": float(best_global['std']) if pd.notna(best_global['std']) else None,
+                "std_over_domains": float(std_over_domains),
+                "global_mean": float(global_mean),
+                "global_std": float(global_std),
+                "num_domains": int(best_global['count']),
+                "domains_tested": list(combined_df.loc[best_mask, 'domain'].unique())
+            }
+        
+            with open(f"{save_dir}/best_global_params_binned.json", "w") as f:
+                json.dump(global_results, f, indent=4)
+            
+            return global_results
+
+        except Exception as e:
+            print(f"Error in binned parameter analysis: {str(e)}")
+            return {}
+        
+
+    def run_global_tuning(self, lodo_results_dir: str, domain_names: List[str], n_trials: int = 30) -> Dict[str, Any]:
+        # determine optimal global parameters without training
+        # analyze LODO results to get parameter distributions
+        lodo_params = self.compute_global_best_params(lodo_results_dir, domain_names)
+
+        if not lodo_params or 'best_params' not in lodo_params:
+            raise ValueError("Could not load valid LODO results for global tuning")
+
+        # create parameter suggestion function
+        def suggest_params(trial):
+            params = {}
+        
+            # learning rate with narrowed range
+            lr_default = 1e-4
+            lr_min = max(1e-6, lodo_params['best_params'].get('lr', lr_default) * 0.5)
+            lr_max = min(1e-2, lodo_params['best_params'].get('lr', lr_default) * 2)
+            params['lr'] = trial.suggest_float("lr", lr_min, lr_max, log=True)
+        
+            # fix optimizer to best type from LODO
+            params['optimizer'] = lodo_params['best_params'].get('optimizer')
+        
+            # fix scheduler to best type from LODO
+            params['scheduler'] = lodo_params['best_params'].get('scheduler')
+
+            # constrained parameter ranges
+            wd_default = 1e-4
+            wd_min = max(1e-6, lodo_params['best_params'].get('weight_decay', wd_default) * 0.5)
+            wd_max = min(1e-3, lodo_params['best_params'].get('weight_decay', wd_default) * 2)
+            params['weight_decay'] = trial.suggest_float("weight_decay", wd_min, wd_max, log=True)
+        
+            # batch size
+            params['batch_size'] = trial.suggest_categorical("batch_size", [8, 16, 32, 64])
+        
+            # optimizer-specific parameters
+            if params['optimizer'] in ['Adam', 'AdamW']:
+                params['beta1'] = trial.suggest_float("beta1", 0.8, 0.99)
+                params['beta2'] = trial.suggest_float("beta2", 0.9, 0.999)
+                params['eps'] = trial.suggest_float("eps", 1e-8, 1e-6)
+            elif params['optimizer'] == 'SGD':
+                params['momentum'] = trial.suggest_float("momentum", 0.1, 0.9)
+                params['nesterov'] = trial.suggest_categorical("nesterov", [True, False])
+        
+            # scheduler-specific parameters
+            if params['scheduler'] == 'StepLR':
+                params['step_size'] = trial.suggest_int("step_size", 5, 20)
+                params['gamma'] = trial.suggest_float("gamma", 0.1, 0.9)
+            elif params['scheduler'] == 'CosineAnnealing':
+                params['T_max'] = trial.suggest_int("T_max", 10, 50)
+                params['eta_min'] = trial.suggest_float("eta_min", 1e-6, 1e-3)
+            elif params['scheduler'] == 'ReduceLROnPlateau':
+                params['factor'] = trial.suggest_float("factor", 0.1, 0.5)
+                params['patience'] = trial.suggest_int("patience", 2, 5)
+
+            # add model architecture parameters
+            dropout_default = 0.1
+            dropout_min = max(0.0, lodo_params['best_params'].get('dropout', dropout_default) - 0.1)
+            dropout_max = min(0.5, lodo_params['best_params'].get('dropout', dropout_default) + 0.1)
+            params['dropout'] = trial.suggest_float("dropout", dropout_min, dropout_max)
+
+            optimizer = params['optimizer']
+            scheduler = params['scheduler']
+
+            return params, optimizer, scheduler
+
+        def global_objective(trial):
+            try:
+                params, optimizer, scheduler = suggest_params(trial)
+
+                trial.set_user_attr("optimizer", optimizer)
+                trial.set_user_attr("scheduler", scheduler)
+                trial.set_user_attr("complete_params", params)
+            
+                # calculate a score based on parameter distances from LODO best
+                score = 0.0
+                valid_params = 0
+            
+                for param, value in params.items():
+                    if param in lodo_params['best_params'] and lodo_params['best_params'][param] is not None:
+                        if isinstance(value, (int, float)):
+                            lodo_value = lodo_params['best_params'][param]
+                            if not np.isnan(lodo_value):
+                                score -= abs(value - lodo_value) / (abs(lodo_value) + 1e-8)
+                                valid_params += 1
+            
+                # normalize score by number of valid parameters
+                if valid_params > 0:
+                    return score / valid_params
+                return 0.0  # fallback if no valid parameters
+        
+            except Exception as e:
+                print(f"Error in global objective: {str(e)}")
+                return 0.0  # return neutral score on error
+
+        # create study and optimize
+        study = optuna.create_study(direction="maximize")
+
+        try:
+            study.optimize(
+                global_objective,
+                n_trials=n_trials,
+                callbacks=[]
+            )
+        except Exception as e:
+            print(f"Optimization failed: {str(e)}")
+            return lodo_params['best_params']   # fallback to LODO params if optimization fails
+
+        # get the best parameters from the study or fallback to LODO params
+        if len(study.trials) > 0 and study.best_trial is not None:
+            final_params = study.best_trial.user_attrs["complete_params"]
+            final_params.update({
+                'optimizer': study.best_trial.user_attrs["optimizer"],
+                'scheduler': study.best_trial.user_attrs["scheduler"]
+            })
+        else:
+            print("No valid trials completed, using LODO params as fallback")
+            final_params = lodo_params['best_params']
+
+        # save results
+        os.makedirs(self.save_dir, exist_ok=True)
+        with open(os.path.join(self.save_dir, "best_global_params.json"), "w") as f:
+            json.dump({
+                "best_params": final_params,
+                "study_results": {
+                    "best_value": study.best_value if study.best_trial else None,
+                    "best_trial": study.best_trial.number if study.best_trial else None,
+                },
+                "lodo_stats": {
+                    "mean_val_acc": lodo_params.get('mean_val_acc', None),
+                    "std_over_domains": lodo_params.get('std_over_domains', None)
+                }
+            }, f, indent=2)
+
+        base_dir = Path(self.save_dir).parent.parent.parent
+        config_dir = base_dir / "configs"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        
+        with open(os.path.join(config_dir, "global_config.yaml"), "w") as f:
+            yaml.safe_dump(final_params, f, sort_keys=False)
+
+        return final_params
     

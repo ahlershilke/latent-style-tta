@@ -6,6 +6,7 @@ from pathlib import Path
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import optuna
+from typing import Dict, Optional
 
 
 def analyze_and_visualize_studies(all_studies, save_dir, use_mixstyle: bool):
@@ -126,52 +127,104 @@ def convert_to_serializable(obj):
     return obj
 
 
-def save_tuning_results(config_dir: str, results_dir: str):
+def save_tuning_results(config_dir: str, results_dir: str, target_dir: Optional[str] = None):
     """
     Save all tuning results in specified folder.
     """
-    #response = input("Would you like to save the tuning results for all folds in another folder? (y/n): ").strip().lower()
-        
-    #if response != 'y':
-       # print("No custom directory provided. Results will not be externally saved.")
-        #return
-        
-    custom_dir = "/mnt/data/hahlers/tuning/woMS"
-    target_dir = Path(os.path.expanduser(custom_dir))
-    target_dir.mkdir(parents=True, exist_ok=True)
+           
+    results_path = Path(results_dir).expanduser().resolve()
+    target_path = Path(target_dir).expanduser().resolve() if target_dir else results_path
+    (target_path / "configs").mkdir(parents=True, exist_ok=True)
 
     try:
-        (Path(target_dir) / "configs").mkdir(exist_ok=True)
-        (Path(target_dir) / "results").mkdir(exist_ok=True)
-
         print("Copying files...")
 
-        config_path = Path(config_dir)
+        config_path = Path(config_dir).expanduser()
         if config_path.exists():
+            for config_file in config_path.glob("*.yaml"):
+                shutil.copy2(config_file, target_dir / "configs" / config_file.name)
             for fold_dir in Path(config_dir).glob("fold_*"):
-                (target_dir / "configs" / fold_dir.name).mkdir(parents=True, exist_ok=True)
+                dest = target_path / "configs" / fold_dir.name
+                dest.mkdir(parents=True, exist_ok=True)
                 for config_file in fold_dir.glob("*.yaml"):
-                    shutil.copy2(config_file, target_dir / "configs" / fold_dir.name / config_file.name)
+                    shutil.copy2(config_file, dest / config_file.name)
 
-        results_path = Path(results_dir)
-        if results_path.exists():
+        if results_path.exists() and target_path != results_path:
+            (target_path / "results").mkdir(parents=True, exist_ok=True)
             for result_file in Path(results_dir).glob("*.*"):
-                if result_file.suffix in ['.csv', '.html', '.json']:
-                    shutil.copy2(result_file, target_dir / result_file.name)
+                if result_file.suffix.lower() in ['.csv', '.html', '.json']:
+                    shutil.copy2(result_file, target_path / result_file.name)
             
             for fold_dir in Path(results_dir).glob("[0-9]"):
-                (target_dir / "results" / fold_dir.name).mkdir(parents=True, exist_ok=True)
+                fold_dest = target_path / "results" / fold_dir.name
+                fold_dest.mkdir(parents=True, exist_ok=True)
+
                 for result_file in fold_dir.glob("*"):
                     if result_file.is_file():
-                        shutil.copy2(result_file, target_dir / "results" / fold_dir.name / result_file.name)
+                        shutil.copy2(result_file, fold_dest / result_file.name)
+                
                 ckpt_source = fold_dir / "checkpoints"
                 if ckpt_source.exists():
-                    (target_dir / "results" / fold_dir.name / "checkpoints").mkdir(exist_ok=True)
+                    ckpt_dest = fold_dest / "checkpoints"
+                    ckpt_dest.mkdir(exist_ok=True)
+                    
                     for ckpt_file in (fold_dir / "checkpoints").glob("*.pt"):
-                        shutil.copy2(ckpt_file, target_dir / "results" / fold_dir.name / "checkpoints" / ckpt_file.name)
+                        shutil.copy2(ckpt_file, ckpt_dest / ckpt_file.name)
     
     except Exception as e:
         print(f"Error while copying files: {e}")
         return
         
     print(f"\nAll results saved to: {target_dir}")
+
+
+def save_training_results(config: Dict, target_dir: str) -> None:
+    """
+    Save all training results (configs, models, visualizations) to a specified folder.
+    
+    Args:
+        target_dir: Base directory where results should be saved
+    """
+    target_path = Path(os.path.expanduser(target_dir))
+    target_path.mkdir(parents=True, exist_ok=True)
+
+    try:
+        # create subdirectories
+        (target_path / "saved_models").mkdir(exist_ok=True)
+        (target_path / "visualizations").mkdir(exist_ok=True)
+        (target_path / "logs").mkdir(exist_ok=True)
+
+        print("Copying training results...")
+
+        # copy saved models
+        models_dir = Path(config['save_dir'])
+        if models_dir.exists():
+            for model_file in models_dir.glob("*.pt"):
+                shutil.copy2(model_file, target_path / "saved_models" / model_file.name)
+            # copy results JSON
+            results_file = models_dir / "lodo_results.json"
+            if results_file.exists():
+                shutil.copy2(results_file, target_path / "lodo_results.json")
+
+        # copy visualizations
+        vis_dir = Path(config['vis_dir'])
+        if vis_dir.exists():
+            for vis_file in vis_dir.glob("*"):
+                if vis_file.is_file():
+                    shutil.copy2(vis_file, target_path / "visualizations" / vis_file.name)
+                elif vis_file.is_dir():  # for subdirectories like domain-specific visualizations
+                    (target_path / "visualizations" / vis_file.name).mkdir(exist_ok=True)
+                    for sub_file in vis_file.glob("*"):
+                        shutil.copy2(sub_file, target_path / "visualizations" / vis_file.name / sub_file.name)
+
+        # copy TensorBoard logs
+        log_dir = Path(config['log_dir'])
+        if log_dir.exists():
+            for log_file in log_dir.glob("*"):
+                shutil.copy2(log_file, target_path / "logs" / log_file.name)
+
+    except Exception as e:
+        print(f"Error while copying training results: {e}")
+        return
+        
+    print(f"\nAll training results saved to: {target_path}")

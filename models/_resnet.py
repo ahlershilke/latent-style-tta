@@ -1,8 +1,12 @@
+import torch
 import torch.nn as nn
 from torch import Tensor
 from typing import List, Type
 from torch.utils import model_zoo
+from torch.nn import functional as F
 from ._mixstyle import MixStyle
+from ._styleextraction import StyleStatistics, StyleExtractorManager
+from typing import Tuple
 
 
 """
@@ -35,9 +39,11 @@ class ResNet(nn.Module):
             layers: list,
             num_classes: int,
             num_domains: int,
+            domain_names: List[str] = None,
             fc_dims=None,
             dropout_p=None,
-            use_mixstyle=True,
+            style_stats_config: dict = None,
+            use_mixstyle: bool = False,
             mixstyle_layers: list = [],
             mixstyle_p: float = 0.5,
             mixstyle_alpha: float = 0.3,
@@ -47,6 +53,9 @@ class ResNet(nn.Module):
         super(ResNet, self).__init__()
         self.in_channels = 64
         self.feature_dim = 512 * block.expansion
+        self.num_domains = num_domains
+        self.domain_names = domain_names
+
         self.conv1 = nn.Conv2d(3, self.in_channels, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(self.in_channels)
         self.relu = nn.ReLU(inplace=True)
@@ -63,6 +72,30 @@ class ResNet(nn.Module):
         )
         self.classifier = nn.Linear(self.feature_dim, num_classes)
 
+        self.style_stats_enabled = True
+        self.style_stats_config = style_stats_config or {
+            'mode': 'selective',
+            'target_layer': [0,1,2,3],
+            'use_ema': True,
+            'ema_momentum': 0.9
+        }
+
+        self.style_stats = StyleStatistics(
+            num_domains=num_domains,
+            num_layers=4,
+            domain_names=self.domain_names,
+            mode=self.style_stats_config.get('mode', 'single'),
+            layer_config=self.style_stats_config.get('target_layer', 0),
+            use_ema=self.style_stats_config.get('use_ema', True),
+            ema_momentum=self.style_stats_config.get('ema_momentum', 0.9),
+            device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        )
+
+        self.style_manager = StyleExtractorManager(
+            domain_names=[str(i) for i in range(num_domains)],
+            device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        )
+
         self.mixstyle = None
         if use_mixstyle:
             self.mixstyle = MixStyle(
@@ -76,6 +109,45 @@ class ResNet(nn.Module):
             if verbose:
                 print('Insert MixStyle after the following layers: {}'.format(mixstyle_layers))
         self.mixstyle_layers = mixstyle_layers
+
+        self._hook_handles = []
+        self._feature_maps = {}
+        self._register_hooks()
+        
+
+    def _register_hooks(self):
+        self._remove_hooks()
+        self._feature_maps = {} # reset with every forward pass
+
+        layers = [
+            ('layer1', self.layer1[-1]),
+            ('layer2', self.layer2[-1]), 
+            ('layer3', self.layer3[-1]),
+            ('layer4', self.layer4[-1])
+        ]
+
+        for name, layer in layers:
+            def hook_factory(layer_name):
+                def hook(_, __, output):
+                    if not self.training:
+                        return
+                    self._feature_maps[layer_name] = output
+                return hook
+
+            handle = layer.register_forward_hook(hook_factory(name))
+            self._hook_handles.append(handle)
+
+
+    def _remove_hooks(self):
+        for handle in self._hook_handles:
+            handle.remove()
+        self._hook_handles = []
+        self._feature_maps = {}
+
+
+    def enable_style_stats(self, enable=True):
+        self.style_stats_enabled = enable
+
 
     def _make_layer(
             self,
@@ -142,50 +214,87 @@ class ResNet(nn.Module):
             domain_idx: int = None
     ) -> Tensor:
         """Pass through the ResNet-blocks."""
+
+        self._feature_maps = {}
+
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
 
         x = self.layer1(x)
-        if self.mixstyle is not None and 'layer1' in self.mixstyle_layers:
-            x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=0)
+        if self.mixstyle and 'layer1' in self.mixstyle_layers:
+            x = self.mixstyle(x)
 
         x = self.layer2(x)
-        if self.mixstyle is not None and 'layer2' in self.mixstyle_layers:
-            x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=1)
+        if self.mixstyle and 'layer2' in self.mixstyle_layers:
+            x = self.mixstyle(x)
 
         x = self.layer3(x)
-        if self.mixstyle is not None and 'layer3' in self.mixstyle_layers:
-            x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=2)
+        if self.mixstyle and 'layer3' in self.mixstyle_layers:
+            x = self.mixstyle(x)
 
         x = self.layer4(x)
-        if self.mixstyle is not None and 'layer4' in self.mixstyle_layers:
-            x = self.mixstyle(x, domain_labels=domain_idx, layer_idx=3)
-
-        return x
+        if self.mixstyle and 'layer4' in self.mixstyle_layers:
+            x = self.mixstyle(x)
+        
+        layer_outputs = [self._feature_maps.get(f'layer{i+1}') for i in range(4)]
+        
+        if domain_idx is not None and self.training:
+            for i, features in enumerate(layer_outputs):
+                if features is not None:
+                    self._update_style_stats(
+                        x=features, 
+                        domain_idx=domain_idx, 
+                        layer_idx=i
+                    )
+              
+        return x, layer_outputs
 
     def forward(
             self,
             x: Tensor,
             domain_idx: int = None
     ) -> Tensor:
-        out = self._feature_extractor(x, domain_idx=domain_idx)
+        features, layer_outputs = self._feature_extractor(x, domain_idx)
 
-        out = self.avgpool(out)
-        v = out.view(out.size(0), -1)
+        features = self.avgpool(features)
+        features = torch.flatten(features, 1)
+
+        v = features.view(features.size(0), -1)
         if self.fc is not None:
             v = self.fc(v)
-        y = self.classifier(v)
-        return y
-    
-    def get_style_stats(self):
-        """Returns the style statistics of the MixStyle module."""
-        if self.mixstyle is not None:
-            return self.mixstyle.style_stats
-        else:
-            raise AttributeError("MixStyle is not enabled in this model.")
+        outputs = self.classifier(v)
 
+        return outputs
+
+
+    def get_style_stats(self, domain_idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.style_stats.get_style_stats(domain_idx)
+    
+    def _update_style_stats(self, x: torch.Tensor, domain_idx: torch.Tensor, layer_idx: int):
+        # collects μ and σ for layers and domains
+        if not (self.style_stats_enabled and self.training and domain_idx is not None):
+            print("Update skipped - disabled or no domain")
+            return
+        
+        if x.dim() != 4:
+            print(f"Update skipped - wrong dim: {x.dim()}")
+            return
+
+        mu = x.mean(dim=[2, 3], keepdim=True).detach()
+        sig = x.std(dim=[2, 3], keepdim=True).detach()
+
+        # initialising Layer if necessary
+        if str(layer_idx) not in self.style_stats.mu_dict:
+            self.style_stats._init_layer(layer_idx, mu.shape[1])
+
+        # convert domain indizes if necessary
+        if isinstance(domain_idx, int):
+            domain_idx = torch.tensor([domain_idx], device=x.device)
+    
+        self.style_stats._batch_update(domain_idx, layer_idx, mu, sig)
+    
 
 class BasicBlock (nn.Module):
     expansion = 1
@@ -343,45 +452,45 @@ def init_pretrained_weights(model, model_url, verbose=False):
     model.load_state_dict(model_dict)
 
 
-def resnet18(num_classes: int, num_domains: int, verbose=False, **kwargs):
+def resnet18(num_classes: int, num_domains: int, verbose=False, use_mixstyle: bool = False, **kwargs):
     model = ResNet(
-        BasicBlock, [2, 2, 2, 2], num_classes, num_domains, verbose=verbose, **kwargs
+        BasicBlock, [2, 2, 2, 2], num_classes, num_domains, verbose=verbose, use_mixstyle=use_mixstyle, **kwargs
     )
     if kwargs.get('pretrained', False):
         init_pretrained_weights(model, model_urls['resnet18'], verbose=verbose)
     return model
 
 
-def resnet34(num_classes: int, num_domains: int, pretrained: bool = True, verbose=False, **kwargs):
+def resnet34(num_classes: int, num_domains: int, pretrained: bool = True, verbose=False, use_mixstyle: bool = False, **kwargs):
     model = ResNet(
-        BasicBlock, [3, 4, 6, 3], num_classes, num_domains, verbose=verbose, **kwargs
+        BasicBlock, [3, 4, 6, 3], num_classes, num_domains, verbose=verbose, use_mixstyle=use_mixstyle, **kwargs
     )
     if pretrained:
         init_pretrained_weights(model, model_urls['resnet34'], verbose=verbose)
     return model
 
 
-def resnet50(num_classes: int, num_domains: int, pretrained: bool = True, verbose=False, **kwargs):
+def resnet50(num_classes: int, num_domains: int, pretrained: bool = True, verbose=False, use_mixstyle: bool = False, **kwargs):
     model = ResNet(
-        Bottleneck, [3, 4, 6, 3], num_classes, num_domains, verbose=verbose, **kwargs
+        Bottleneck, [3, 4, 6, 3], num_classes, num_domains, verbose=verbose, use_mixstyle=use_mixstyle, **kwargs
     )
     if pretrained:
         init_pretrained_weights(model, model_urls['resnet50'], verbose=verbose)
     return model
 
 
-def resnet101(num_classes: int, num_domains: int, pretrained: bool = True, verbose=False, **kwargs):
+def resnet101(num_classes: int, num_domains: int, pretrained: bool = True, verbose=False, use_mixstyle: bool = False, **kwargs):
     model = ResNet(
-        Bottleneck, [3, 4, 23, 3], num_classes, num_domains, verbose=verbose, **kwargs
+        Bottleneck, [3, 4, 23, 3], num_classes, num_domains, verbose=verbose, use_mixstyle=use_mixstyle, **kwargs
     )
     if pretrained:
         init_pretrained_weights(model, model_urls['resnet101'], verbose=verbose)
     return model
 
 
-def resnet152(num_classes: int, num_domains: int, pretrained: bool = True, verbose=False, **kwargs):
+def resnet152(num_classes: int, num_domains: int, pretrained: bool = True, verbose=False, use_mixstyle: bool = False, **kwargs):
     model = ResNet(
-        Bottleneck, [3, 8, 36, 3], num_classes, num_domains, verbose=verbose, **kwargs
+        Bottleneck, [3, 8, 36, 3], num_classes, num_domains, verbose=verbose, use_mixstyle=use_mixstyle, **kwargs
     )
     if pretrained:
         init_pretrained_weights(model, model_urls['resnet152'], verbose=verbose)
