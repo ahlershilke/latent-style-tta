@@ -33,19 +33,6 @@ def convert_to_serializable(obj):
         return obj
 
 
-class AggregationStrategy(Enum):
-    AVERAGE = auto()
-    MAJORITY_VOTE = auto()
-    MAX_CONFIDENCE = auto()
-    WEIGHTED_AVERAGE = auto()
-
-
-class FeatureAggregationStrategy(Enum):
-    MEAN = auto()
-    MAX = auto()
-    CONCAT = auto()
-
-
 class SeedManager:
     def __init__(self, base_seed=42):
         self.base_seed = base_seed
@@ -69,8 +56,6 @@ class TTAClassifier(nn.Module):
                  test_domain: str = None, 
                  device: str = 'cuda', 
                  num_classes: Optional[int] = None,
-                 aggregation_strategy: AggregationStrategy = AggregationStrategy.AVERAGE,
-                 feature_aggregation: FeatureAggregationStrategy = FeatureAggregationStrategy.MEAN,
                  verbose: bool = False,
                  seed: Optional[int] = None,
                  class_names: Optional[List[str]] = None,
@@ -93,8 +78,6 @@ class TTAClassifier(nn.Module):
         super().__init__()
         self.device = device
         self.verbose = verbose
-        self.aggregation_strategy = aggregation_strategy
-        self.feature_aggregation = feature_aggregation
         self.alpha = 0.5
         self.beta = torch.distributions.Beta(self.alpha, self.alpha)
         self.mode = mode
@@ -134,7 +117,7 @@ class TTAClassifier(nn.Module):
         self.accuracy = Accuracy(task='multiclass', num_classes=num_classes).to(self.device)
 
         self.class_names = class_names if class_names else [f"Class_{i}" for i in range(num_classes)]
-        self.domain_names = domain_names #if domain_names is not None else [f"domain_{i}" for i in range(4)]
+        self.domain_names = domain_names
 
         self.style_stats = self._load_style_stats()
 
@@ -152,16 +135,10 @@ class TTAClassifier(nn.Module):
         # for uncertainty estimation
         self.entropy = nn.CrossEntropyLoss(reduction='none')
         
-        # for weighted average aggregation
-        self.domain_weights = None
-        if self.aggregation_strategy == AggregationStrategy.WEIGHTED_AVERAGE:
-            self._init_domain_weights()
-
 
     def _parse_mode(self):
         if self.mode.startswith("single"):
             self.base_mode = "single"
-            #self.target_layers = [0, 1, 2, 3]
             self.target_layers = [int(self.mode.split("_")[1])]
         elif self.mode.startswith("selective"):
             self.base_mode = "selective"
@@ -195,19 +172,7 @@ class TTAClassifier(nn.Module):
             
             if os.path.exists(stats_path):
                 print(f"\nLoading stats for {domain} from {stats_path}")
-                domain_stats = torch.load(stats_path, map_location=self.device, weights_only=True)
-            
-                """
-                print("Keys in loaded file:", list(domain_stats.keys()))
-                for k, v in domain_stats.items():
-                    if isinstance(v, torch.Tensor):
-                        print(f"{k}: shape={v.shape} mean={v.mean().item()}")
-                    elif isinstance(v, dict):
-                        for sk, sv in v.items():
-                            if isinstance(sv, torch.Tensor):
-                                print(f"  {sk}: shape={sv.shape} mean={sv.mean().item()}")
-                """
-            
+                domain_stats = torch.load(stats_path, map_location=self.device, weights_only=True)           
                 stats.load_state_dict(domain_stats, strict=False)
             
             elif self.verbose:
@@ -286,32 +251,6 @@ class TTAClassifier(nn.Module):
         with torch.no_grad():
             features = self.feature_extractor(test_input)
         return features.shape[1]
-
-
-    def _aggregate_features(self, features_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """
-        Aggregate features from multiple layers according to strategy.
-        
-        Args:
-            features_dict: Dictionary of {layer_name: features}
-            
-        Returns:
-            Aggregated features
-        """
-        features = list(features_dict.values())
-        
-        if self.feature_aggregation == FeatureAggregationStrategy.MEAN:
-            return torch.mean(torch.stack(features), dim=0)
-        elif self.feature_aggregation == FeatureAggregationStrategy.MAX:
-            return torch.max(torch.stack(features), dim=0)[0]
-        elif self.feature_aggregation == FeatureAggregationStrategy.CONCAT:
-            return torch.cat(features, dim=1)
-        elif self.feature_aggregation == FeatureAggregationStrategy.ATTENTION:
-            # Simple attention mechanism (could be enhanced)
-            weights = torch.softmax(torch.randn(len(features)), dim=0).to(self.device)
-            return sum(w * f for w, f in zip(weights, features))
-        else:
-            raise ValueError(f"Unknown feature aggregation strategy: {self.feature_aggregation}")
     
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -320,37 +259,6 @@ class TTAClassifier(nn.Module):
         if self.classifier:
             return self.classifier(features)
         return features
-
-
-    def _aggregate_predictions(self, 
-                             all_probs: List[torch.Tensor],
-                             domain: Optional[str] = None) -> torch.Tensor:
-        """
-        Aggregate predictions according to the configured strategy.
-        
-        Args:
-            all_probs: List of probability tensors from different augmentations
-            domain: Current domain (for weighted average)
-            
-        Returns:
-            Aggregated probabilities
-        """
-        if self.aggregation_strategy == AggregationStrategy.AVERAGE:
-            return torch.mean(torch.stack(all_probs), dim=0)
-        elif self.aggregation_strategy == AggregationStrategy.MAJORITY_VOTE:
-            preds = torch.stack([torch.argmax(p, dim=1) for p in all_probs])
-            votes = torch.mode(preds, dim=0)[0]
-            return torch.zeros_like(all_probs[0]).scatter_(1, votes.unsqueeze(1), 1)
-        elif self.aggregation_strategy == AggregationStrategy.MAX_CONFIDENCE:
-            confidences = torch.stack([torch.max(p, dim=1)[0] for p in all_probs])
-            max_idx = torch.argmax(confidences, dim=0)
-            return torch.stack([all_probs[i][j] for j, i in enumerate(max_idx)])
-        elif self.aggregation_strategy == AggregationStrategy.WEIGHTED_AVERAGE:
-            weight = self.domain_weights.get(domain, 1.0) if domain else 1.0
-            weighted = [p * weight for p in all_probs]
-            return torch.sum(torch.stack(weighted), dim=0) / sum(weight for _ in all_probs)
-        else:
-            raise ValueError(f"Unknown aggregation strategy: {self.aggregation_strategy}")
 
 
     def predict(self, 
@@ -436,7 +344,7 @@ class TTAClassifier(nn.Module):
                     labels = batch[1].to(self.device) if len(batch) > 1 else None
                     _ = batch[2].to(self.device) if len(batch) > 2 else None
 
-                    # 1. Original prediction (no augmentation)
+                    # original prediction (no augmentation)
                     orig_logits = self.model(images)
                     orig_probs = self.softmax(orig_logits)
                     orig_preds = torch.argmax(orig_probs, dim=1)
@@ -455,12 +363,10 @@ class TTAClassifier(nn.Module):
                         original_results['real_class_probs'].append(orig_real_class_probs)
                         correct_vec = (orig_preds == labels).long().cpu().numpy()
 
-                    #batch_aug_preds = []
-                    #probs_per_augmentation = []
                     probs_per_augmentation, preds_per_augmentation = [], []
                     real_class_probs_per_domain = []
 
-                    # 2. process each target domain separately
+                    # process each target domain separately
                     for target_domain in available_domains:
                         hooks = []
                         
@@ -490,7 +396,7 @@ class TTAClassifier(nn.Module):
                                 print(f"Error processing domain {target_domain}: {str(e)}")
                             continue
 
-                        # Forward pass with domain adaptation
+                        # forward pass with domain adaptation
                         domain_logits = self.model(images)
                         probs_tensor = self.softmax(domain_logits)
                         domain_preds = torch.argmax(probs_tensor, dim=1)
@@ -499,7 +405,7 @@ class TTAClassifier(nn.Module):
                         probs_per_augmentation.append(domain_probs)
                         preds_per_augmentation.append(domain_preds.cpu().numpy())
 
-                        # Store predictions and labels for this domain
+                        # store predictions and labels for this domain
                         domain_results[target_domain]['all_preds'].append(domain_preds.cpu().numpy())
                         domain_results[target_domain]['all_probs'].append(domain_probs)
                         
@@ -515,7 +421,7 @@ class TTAClassifier(nn.Module):
                             viz_data['sample_imgs']['augmented'][target_domain] = images[0]
                             viz_data['probs']['augmented'][target_domain].append(domain_probs)
                                                 
-                        # Remove hooks
+                        # remove hooks
                         for hook in hooks:
                             hook.remove()
                     
@@ -526,7 +432,6 @@ class TTAClassifier(nn.Module):
                         per_sample_var = per_class_var.mean(axis=1)
                         cross_domain_variance_all.extend(per_sample_var.tolist())
 
-                        #per_sample_uncertainty.extend(per_sample_var.tolist())
                         per_sample_correct.extend(correct_vec.tolist())
                         
                         if len(real_class_probs_per_domain) > 0:
@@ -599,7 +504,6 @@ class TTAClassifier(nn.Module):
                 real_class_probs = np.concatenate(domain_results[domain]['real_class_probs'])
             
                 acc = (preds == labels).mean()
-                #real_class_var = np.var(real_class_probs)
                 all_probs = np.concatenate(domain_results[domain]['all_probs'], axis=0)
                 if len(all_probs) > 0:
                     per_class_var = np.var(all_probs, axis=0)
@@ -609,7 +513,6 @@ class TTAClassifier(nn.Module):
                     avg_variance = None
                     real_class_var = None
 
-                #avg_variance = np.mean(domain_results[domain]['variance']) if domain_results[domain]['variance'] else None
                 avg_disagreement = np.mean(domain_results[domain]['disagreement']) if domain_results[domain]['disagreement'] else None
 
                 results['target_domains'][domain] = {
@@ -727,29 +630,12 @@ class TTAExperiment:
 
 
     def _get_class_names(self) -> List[str]:
-        """Extrahiere Klassennamen aus dem Dataset"""
+        """Extract Class names from the dataset"""
         try:
             return self.test_loader.dataset.classes
         except AttributeError:
             return [f"Class_{i}" for i in range(self.config['num_classes'])]
-        
-
-    @staticmethod
-    def generate_mode_variants(domain_names, base_mode):
-        """Generiert alle Varianten für einen gegebenen Modus"""
-        variants = []
-        num_domains = len(domain_names)
-    
-        if base_mode == 'single':
-            variants = [f'single_{i}' for i in range(num_domains)]
-        elif base_mode == 'selective':
-            variants = [f'selective_{i}_{j}' for i in range(num_domains) 
-                       for j in range(i+1, num_domains)]
-        elif base_mode == 'average':
-            variants = ['average']
-    
-        return variants
-    
+          
     
     def get_all_modes(self):
         return [
@@ -905,7 +791,7 @@ class TTAExperiment:
                             'auad_gain_abs_std': std_gain_abs,
                         }
 
-                        # Write to txt file
+                        # write to txt file
                         txt_f.write("\nDrop-curve metrics (averaged across seeds):\n")
                         txt_f.write(f"  AUAD (uncertainty curve): {mean_auc:.4f} ± {std_auc:.4f}\n")
                         txt_f.write(f"  Gain over random (abs):   {mean_gain_abs:.4f} ± {std_gain_abs:.4f}\n")
@@ -995,7 +881,6 @@ class TTAExperiment:
 
         checkpoint = torch.load(model_path, map_location=self.config['device'], weights_only=True)
 
-        #resnet hier pretrained=False oder pretrained=True??
         model = resnet50(
             pretrained=False, 
             num_classes=self.config['num_classes'], 
@@ -1050,7 +935,7 @@ class TTAExperiment:
             viz_loader = DataLoader(
                 viz_dataset,
                 batch_size=32,
-                shuffle=False, #TODO true oder false?
+                shuffle=False,
                 collate_fn=lambda b: (
                     torch.stack([x[0] for x in b]).to(self.config['device']),  # images
                     torch.tensor([x[1] for x in b]).to(self.config['device']),  # labels
@@ -1073,7 +958,6 @@ class TTAExperiment:
             seed=seed,
             class_names=self.class_names,
             domain_names=self.domain_names,
-            #vis_dir=self.config['output_dir']
             vis_dir=os.path.join(self.config['output_dir'], f"seed_{seed}", test_domain)
         )
 
@@ -1210,7 +1094,7 @@ def parse_args() -> Dict[str, Any]:
     parser.add_argument('--verbose', action='store_true', 
                        help='Enable verbose logging')
     parser.add_argument('--random_trials', type=int, default=1000,
-                    help='Number of random extractions for the random baseline')
+                    help='Number of random extractions for the random baseline for drop curves')
     parser.add_argument('--random_band', type=str, default='none', choices=['sigma','none'],
                     help='Restrict random removals to ±1σ band (sigma) or over all samples (none)')
 

@@ -4,10 +4,8 @@ import torch
 import numpy as np
 from torchvision import transforms
 from typing import Optional, Tuple
-
 from typing import Any
 from collections import defaultdict
-
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, ConcatDataset, Subset
 from torchvision.datasets import ImageFolder
@@ -21,6 +19,7 @@ This code was taken and adapted from:
 
 """To add a new dataset, just create a class that inherits from `DomainDataset`."""
 
+
 DOMAIN_NAMES = {
     'PACS': ["art_painting", "cartoon", "photo", "sketch"],
     'VLCS': ["Caltech101", "LabelMe", "SUN09", "VOC2007"]
@@ -30,6 +29,9 @@ CLASS_NAMES = {
     'PACS': ["dog", "elephant", "giraffe", "guitar", "horse", "house", "person"],
     'VLCS': ["bird", "car", "chair", "dog", "person"]
 }
+
+"""Insert other Domain and Class names for additional datasets"""
+
 
 class DomainSubset(Subset):
     """Wraps a dataset and adds domain index to the output."""
@@ -66,7 +68,7 @@ class DomainDataset(MultiDomainDataset):
         Base dataset class for a multi-domain dataset. Expects folder structure to be compatible with ImageFolder.
         :param root: Dataset directory.
         :param test_domain: Leave out domain.
-        :param augment: Augment that needs to be applied. Defaults to ImageNet transformation.
+        :param augment: Augment that needs to be applied. Defaults to None.
         :param subset: Fraction of dataset that ought to be used. Keeps class and target distribution true to original
          data. Defaults to None = use entire dataset.
         :return: None
@@ -83,7 +85,6 @@ class DomainDataset(MultiDomainDataset):
 
         transform = transforms.Compose([
             transforms.Resize(input_size),
-            #transforms.CenterCrop(input_size),
             transforms.ToTensor(),  # PIL -> Tensor + [0,1] normalisation
             transforms.Normalize(
                 mean=[0.485, 0.456, 0.406],
@@ -166,17 +167,16 @@ class DomainDataset(MultiDomainDataset):
 
         # custom collate function
         def collate_fn(batch):
-            #batch = [item if len(item) == 3 else (*item, None) for item in batch]
             imgs = torch.stack([item[0] for item in batch])
             labels = torch.tensor([item[1] for item in batch])
             domains = torch.tensor([item[2] for item in batch])
             return imgs, labels, domains
 
-        # Step 1: Create reindexing map
+        # create reindexing map
         train_domain_indices = [i for i in range(len(self.data)) if i != self.test_domain]
         domain_idx_mapping = {old: new for new, old in enumerate(train_domain_indices)}
 
-        # Step 2: Split into train/val per domain using reindexed domain_idx
+        # split into train/val per domain using reindexed domain_idx
         train_subsets = []
         val_subsets = []
 
@@ -196,7 +196,7 @@ class DomainDataset(MultiDomainDataset):
             train_subsets.append(DomainSubset(dom, train_idx, new_domain_idx))
             val_subsets.append(DomainSubset(dom, val_idx, new_domain_idx))
 
-        # Step 3: Create loaders
+        # create loaders
         train_loader = DataLoader(
             ConcatDataset(train_subsets),
             batch_size=batch_size,
@@ -216,14 +216,7 @@ class DomainDataset(MultiDomainDataset):
         test_loader = None
         if self.test_domain is not None:
             test_domain_dataset = self.data[self.test_domain]
-            """
-            test_loader = DataLoader(
-                DomainSubset(test_domain_dataset, list(range(len(test_domain_dataset))), domain_idx=len(train_domain_indices)),
-                batch_size=batch_size,
-                shuffle=False,
-                collate_fn=collate_fn,
-            )
-            """
+
             test_subset = DomainSubset(
                 test_domain_dataset,
                 indices=list(range(len(test_domain_dataset))),
@@ -231,7 +224,7 @@ class DomainDataset(MultiDomainDataset):
                 original_domain_indices=[self.test_domain] * len(test_domain_dataset)
             )
             test_loader = DataLoader(
-                test_subset,  # Verwende DomainSubset!
+                test_subset,
                 batch_size=batch_size,
                 shuffle=False,
                 collate_fn=collate_fn,
@@ -265,7 +258,7 @@ class DomainDataset(MultiDomainDataset):
 
         # index remapping
         domain_idx_mapping = {old: new for new, old in enumerate(train_domain_indices)}
-        self.train_domain_idx_mapping = domain_idx_mapping  # optional: merken für später
+        self.train_domain_idx_mapping = domain_idx_mapping
 
         for old_domain_idx in train_domain_indices:
             dom = self.data[old_domain_idx]
@@ -349,17 +342,13 @@ def get_dataset(
 ) -> DomainDataset:
     """
     Gets a domain dataset from a given name.
-    :param name: Dataset name as string. Must be one of: PACS, camelyon17
+    :param name: Dataset name as string. Must be one of: PACS, VLCS
     :param root_dir: Path to datasets directory.
     :param test_domain: Leave out domain.
     :return:
     """
-    if name == 'PACS':
-        return PACS(root_dir, test_domain=test_domain, **kwargs)
-    if name == 'VLCS':
-        return VLCS(root_dir, test_domain=test_domain, **kwargs)
-    else:
-        raise ValueError(f"Dataset {name} not found. Please check the name or add it to the code.")
+    dataset = get_dataset_map(name)
+    return dataset(root=root_dir, test_domain=test_domain, **kwargs)
 
 
 """Insert new datasets below."""
@@ -378,11 +367,11 @@ class PACS(DomainDataset):
             domain_data.domain_idx = domain_idx
 
     def __getitem__(self, index):
-        if isinstance(index, tuple):  # Nur für DomainSubset nötig
+        if isinstance(index, tuple):
             domain_idx, sample_idx = index[0], index[1]
             img, label = self.data[domain_idx][sample_idx]
             return img, label, domain_idx
-        else:  # Standardfall
+        else:
             for domain_idx, domain_data in enumerate(self.data):
                 if index < len(domain_data):
                     img, label = domain_data[index]
@@ -407,11 +396,11 @@ class VLCS(DomainDataset):
             domain_data.domain_idx = domain_idx
     
     def __getitem__(self, index):
-        if isinstance(index, tuple):  # Nur für DomainSubset nötig
+        if isinstance(index, tuple):
             domain_idx, sample_idx = index[0], index[1]
             img, label = self.data[domain_idx][sample_idx]
             return img, label, domain_idx
-        else:  # Standardfall
+        else:
             for domain_idx, domain_data in enumerate(self.data):
                 if index < len(domain_data):
                     img, label = domain_data[index]
@@ -424,7 +413,7 @@ class VLCS(DomainDataset):
 
 
     def check_corruption():
-        root = "/mnt/data/hahlers/datasets/VLCS"
+        root = "path/to/VLCS/dataset"
         corrupted = []
 
         for domain in os.listdir(root):
@@ -437,3 +426,20 @@ class VLCS(DomainDataset):
                     corrupted.append(os.path.join(dpath, fn))
 
         print("Corrupted files:", corrupted)
+
+
+"Space for new datasets"
+
+
+
+DATASET_MAP = {
+    "PACS": PACS,
+    "VLCS": VLCS
+    # other datasets
+}
+
+def get_dataset_map(name: str):
+    """Returns dataset."""
+    if name not in DATASET_MAP:
+        raise ValueError(f"Dataset '{name}' not found. Available: {list(DATASET_MAP.keys())}")
+    return DATASET_MAP[name]

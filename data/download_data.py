@@ -133,8 +133,6 @@ if __name__ == '__main__':
     parser.add_argument('--all', action='store_true', default=False)
     args = parser.parse_args()
 
-#python download.py --datadir /custom/path --download_pacs
-
     if args.all:
         # insert all datasets here
         args.download_pacs = True

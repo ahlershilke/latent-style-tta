@@ -8,17 +8,19 @@ import torch
 import torch.nn as nn
 import subprocess
 from tqdm import tqdm
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from torch.utils.data.dataloader import default_collate
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional
-from data._load_data import get_lodo_splits
-from models import resnet50, resnet18
-from data._datasets import PACS, VLCS, DOMAIN_NAMES, DomainDataset, DomainSubset
+from typing import Dict, List, Tuple
+from models import resnet50
+from data._datasets import DATASET_MAP, get_dataset_map, DOMAIN_NAMES, DomainDataset, DomainSubset
 from utils._visualize import Visualizer
 from utils._utils import save_training_results
 from models._styleextraction import StyleExtractorManager
+
+
+def bool_arg(v: str) -> bool:
+    return str(v).lower() in {"1", "true", "yes", "y", "t"}
 
 
 class TrainingFramework:
@@ -46,7 +48,6 @@ class TrainingFramework:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.writer = SummaryWriter(self.config['log_dir'])
         
-        # Datenverwaltung
         self.full_dataset = dataset
         self.class_names = class_names
         self.domain_names = domain_names
@@ -107,11 +108,10 @@ class TrainingFramework:
         """Initialises the best model with given hyperparameters"""
         model = resnet50(
             num_classes=len(self.class_names),
-            num_domains=len(DOMAIN_NAMES['PACS']),
-            #num_domains=len(DOMAIN_NAMES['VLCS']),
+            num_domains=len(self.domain_names),
             domain_names=self.domain_names,
             batch_size=hparams['batch_size'],
-            use_mixstyle=True,
+            use_mixstyle=self.config['use_mixstyle'],
             dropout_p=hparams['dropout'],
             pretrained=True
         )
@@ -149,7 +149,7 @@ class TrainingFramework:
         if hparams['scheduler'] == 'CosineAnnealing':
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer,
-                T_max=hparams['T_max'], #T_max=self.config['num_epochs'], #T_max= hparams['T_max'],
+                T_max=hparams['T_max'],
                 eta_min=hparams['eta_min']
             )
         elif hparams['scheduler'] == 'StepLR':
@@ -163,8 +163,7 @@ class TrainingFramework:
                 optimizer,
                 mode='min',
                 factor=hparams['factor'],
-                patience=hparams['patience']#,
-                #verbose=True
+                patience=hparams['patience']
             )
 
         return optimizer, scheduler
@@ -197,7 +196,7 @@ class TrainingFramework:
                     'num_classes': len(self.class_names),
                     'num_domains': len(self.domain_names),
                     'batch_size': hparams['batch_size'],
-                    'use_mixstyle': False,
+                    'use_mixstyle': self.config['use_mixstyle'],
                     'dropout_p': hparams['dropout'],
                     'pretrained': True
                 },
@@ -259,9 +258,8 @@ class TrainingFramework:
         return val_loss / len(loader), accuracy
 
 
-    def run(self, hparam_path: str):
+    def run(self, hparam_path: str, use_mixstyle: bool = False, extract_stats: bool = True):
         """Train the model using lodo cross-validation"""
-        #self.visualizer._visualize_raw_dataset(loader=DataLoader(self.full_dataset, batch_size=32, shuffle=False), n_samples=500)
         self.visualizer._visualize_complete_raw_dataset(loader=DataLoader(self.full_dataset, batch_size=32, shuffle=False))
         hparams = self._load_hparams(hparam_path)
         results = {
@@ -274,7 +272,6 @@ class TrainingFramework:
 
         all_true_labels, all_pred_labels, all_domains = [], [], []
     
-        # Nutze die intern generierten Splits statt get_lodo_splits()
         domain_pbar = tqdm(
             enumerate(self.lodo_splits), 
             total=len(self.lodo_splits), 
@@ -384,17 +381,7 @@ class TrainingFramework:
             all_true_labels.extend(test_labels)
             all_pred_labels.extend(test_preds)
             all_domains.extend(test_domains)
-
-            loaders_dict = {
-                domain_name: DataLoader(
-                    DomainSubset(test_data, indices=range(len(test_data)), domain_idx=idx),
-                    batch_size=hparams['batch_size'],
-                    shuffle=False
-                )
-                for idx, (domain_name, test_data) in enumerate(zip(self.domain_names, test_data))
-            }
-            
-            
+                       
             dl = DataLoader(
                 dataset=self.full_dataset,
                 batch_size=64,
@@ -402,54 +389,27 @@ class TrainingFramework:
                 pin_memory=True
                 )
 
-            # Visualisierungen
-            self.visualizer.visualize_resnet_tsne_blocks(
-                model=model,
-                loader=dl,
-                device=self.device,
-                n_samples=500,
-                block_names=['layer1', 'layer2', 'layer3', 'layer4']
-            )
+            # Visualizations
+            self.visualizer.visualize_resnet_tsne_blocks(model=model, loader=dl, device=self.device, n_samples=500, block_names=['layer1', 'layer2', 'layer3', 'layer4'])
             self.visualizer._plot_training_curves(epoch_train_losses, epoch_val_losses, epoch_test_losses, epoch_train_accs, epoch_val_accs, epoch_test_accs, domain_name)
             self.visualizer._plot_roc_pr_curves(model, test_loader, domain_name)
             self.visualizer._plot_confusion_matrix(model, test_loader, domain_name)
             self.visualizer._visualize_full_embedded_dataset(model, loader=DataLoader(self.full_dataset, batch_size=32, shuffle=False))
             self.visualizer._visualize_predictions(model, test_loader, domain_name, num_examples=5)
-            self.visualizer._visualize_gradcam_predictions(
-                model=model,
-                loader=test_loader,
-                domain_name=domain_name,
-                num_examples=5,
-                target_layer=None  # will auto-detect last conv layer
-            )
-            #self.visualizer._visualize_umap_embeddings(
-             #   model=model,
-              #  loader=test_loader,  # oder DataLoader(self.full_dataset)
-               # domain_name=domain_name,
-                #n_samples=500
-            #)
-            #self.visualizer._visualize_raw_umap(loader=test_loader, domain_name=domain_name)
-            
+            self.visualizer._visualize_gradcam_predictions(model=model, loader=test_loader, domain_name=domain_name, num_examples=5, target_layer=None)  # target_layer=None will auto-detect last conv layer)
     
         results['avg_val_acc'] = np.mean(results['all_val_acc'])
         results['avg_train_loss'] = np.mean(results['all_train_loss'])
         results['avg_val_loss'] = np.mean(results['all_val_loss'])
         results['avg_test_acc'] = np.mean(results['all_train_acc'])
-
-        # Gesamtergebnisse
-        
-        #self.visualizer._plot_comparative_metrics(results)
-        self.visualizer._visualize_embedded_dataset(
-            model=model,
-            loader=DataLoader(self.full_dataset, batch_size=32, shuffle=False),
-            n_samples=500
-        )
+   
         self._save_results(results)    
 
         self.writer.close()
         domain_pbar.close()
 
-        self.extract_style_stats_from_saved_models(hparam_path)
+        if extract_stats:
+            self.extract_style_stats_from_saved_models(hparam_path)
 
         return results
 
@@ -469,8 +429,6 @@ class TrainingFramework:
             if not k.startswith('style_stats.')
         }
 
-        #style_stats_state = model.style_stats.state_dict()
-
         style_stats_state = {
             'mu_dict': {k: v.clone() for k, v in model.style_stats.mu_dict.items()},
             'sig_dict': {k: v.clone() for k, v in model.style_stats.sig_dict.items()},
@@ -478,10 +436,8 @@ class TrainingFramework:
             'count': model.style_stats.count.clone()
         }
 
-        
         torch.save({
             'model_state_dict': model_state_dict,
-            #'style_stats': model.style_stats.state_dict(),
             'style_stats': style_stats_state,
             'style_stats_config': model.style_stats_config,
             'fold': self.current_domain,
@@ -494,7 +450,6 @@ class TrainingFramework:
             'timestamp': datetime.now().isoformat()
         }, save_path)
         
-
         checkpoint = {
             'model_state_dict': model_state_dict,
             'style_stats': style_stats_state,
@@ -507,12 +462,12 @@ class TrainingFramework:
                 'num_layers': model.style_stats.num_layers,  # Wichtig fürs Laden
                 'domain_names': model.style_stats.domain_names
             },
-            'version': '1.1',  # Für zukünftige Kompatibilität
+            'version': '1.1',
             'git_hash': subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip(),
             'timestamp': datetime.now().isoformat()
         }
 
-        # 5. Finale Validierung vor dem Speichern
+        # final validation before saving
         assert checkpoint['style_stats']['layer_counts'].shape == (
             model.style_stats.num_domains,
             model.style_stats.num_layers
@@ -540,17 +495,23 @@ def main():
     seeds = [42, 7, 0]
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_root', type=str, default="/mnt/data/hahlers/datasets")
-    parser.add_argument('--hparam_file', type=str, default="configs/pacs/global_config.yaml")
+    parser.add_argument('--data_root', type=str, help='Path to folder with dataset, starting with /')
+    parser.add_argument('--dataset_name', type=str, default='PACS', help='Name of dataset to train on, available are PACS and VLCS')
+    parser.add_argument('--hparam_file', type=str, default="configs/pacs/global_config.yaml", help='Path to hp_param file')
     parser.add_argument('--num_epochs', type=int, default=50, help='Number of training epochs')
     parser.add_argument('--domains', type=int, default=4, help='Number of domains')
+    parser.add_argument('--use_mixstyle', type=bool, default=False, help='Use MixStyle in Training, True or False, default=False')
+    parser.add_argument('--extract_stats', type=bool_arg, default=True, help='Extract style stats after training (True/False), default=true')
     args = parser.parse_args()
 
     base_config = {
         'data_root': args.data_root,
         'hparam_file': args.hparam_file,
         'num_epochs': args.num_epochs,
-        'domains': args.domains
+        'domains': args.domains,
+        'dataset_name': args.dataset_name,
+        'use_mixstyle': args.use_mixstyle,
+        'extract_stats': args.extract_stats
     }
 
     all_results = []
@@ -571,17 +532,21 @@ def main():
         os.makedirs(seed_config['save_dir'], exist_ok=True)
         os.makedirs(seed_config['vis_dir'], exist_ok=True)
 
-        full_dataset = PACS(root=seed_config['data_root'], test_domain=None)
-        #full_dataset = VLCS(root=seed_config['data_root'], test_domain=None)
+        dataset = get_dataset_map(base_config['dataset_name'])
+        full_dataset = dataset(root=seed_config['data_root'], test_domain=None)
         
         trainer = TrainingFramework(
             config=seed_config,
             dataset=full_dataset,
             class_names=full_dataset.classes,
-            domain_names=DOMAIN_NAMES["PACS"]
+            domain_names=DOMAIN_NAMES[base_config['dataset_name']]
         )
         
-        results = trainer.run(args.hparam_file)
+        results = trainer.run(
+            hparam_path=args.hparam_file, 
+            use_mixstyle=args.use_mixstyle,
+            extract_stats=args.extract_stats
+        )
         results['seed'] = seed
         all_results.append(results)
         
@@ -591,7 +556,7 @@ def main():
     final_visualizer = Visualizer(
         config=None,
         class_names=full_dataset.classes,
-        domain_names=DOMAIN_NAMES["PACS"],
+        domain_names=DOMAIN_NAMES[base_config['dataset_name']],
         vis_dir="experiments/train_results/visualizations/final"
     )
     test_stats = final_visualizer.calculate_test_statistics(all_results)
@@ -616,59 +581,9 @@ def main():
     with open("experiments/train_results/final_results.json", 'w') as f:
         json.dump(final_results, f, indent=2)
 
-    save_training_results(seed_config, "/mnt/data/hahlers/training")
+    # saves training results to external place
+    # save_training_results(seed_config, "alternative/path")
     
-
-def extract_stats_for_all_seeds():
-    seeds = [42, 7, 0]
-    domain_names = DOMAIN_NAMES["PACS"]  # Annahme: ['Caltech', 'Labelme', 'Pascal', 'Sun']
-    dataset = PACS(root="/mnt/data/hahlers/datasets", test_domain=None)
-    
-    print(f"\n=== Processing seed {0} ===")
-    save_dir = f"experiments/train_results/pacs_woMS/saved_models/seed_{0}"
-     
-    for domain_idx, domain_name in enumerate(domain_names):
-        model_path = os.path.join(save_dir, f"best_fold_{domain_name}.pt")
-            
-        if not os.path.exists(model_path):
-            print(f"Modell für {domain_name} nicht gefunden in Seed {0}")
-            continue
-            
-        print(f"\nExtrahiere Style-Stats für {domain_name}-Modell (Seed {0})")
-            
-        # Trainingsdomänen sind alle außer der aktuellen
-        train_domains = [i for i in range(len(domain_names)) if i != domain_idx]
-            
-        # Framework initialisieren
-        trainer = TrainingFramework(
-            config={
-                'save_dir': save_dir,
-                'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-                'log_dir': f"experiments/train_results/logs/seed_{0}",
-                'vis_dir': f"experiments/train_results/visualizations/seed_{0}"
-            },
-            dataset=PACS(root="/mnt/data/hahlers/datasets", test_domain=None),
-            class_names=dataset.classes,
-            domain_names=domain_names
-        )
-            
-        # Style-Extraktion nur für Trainingsdomänen durchführen
-        trainer.style_manager.extract_from_saved_model(
-            model_path=model_path,
-            domain_name=domain_name,
-            model_class=resnet50,
-            model_args={
-                'num_classes': 7,
-                'num_domains': len(domain_names),
-                'batch_size': 64,  # Muss mit Trainings-Batchsize übereinstimmen
-                'use_mixstyle': False,
-                'pretrained': True
-            },
-            domain_indices_to_extract=train_domains
-        )
-
-#if __name__ == "__main__":
- #   extract_stats_for_all_seeds()
 
 if __name__ == "__main__":
     main()

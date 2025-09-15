@@ -1,5 +1,4 @@
-from ._datasets import PACS, MultiDomainDataset, DOMAIN_NAMES, get_dataset, DomainDataset, DomainSubset
-from ._load_data import get_train_val_datasets
+from ._datasets import PACS, MultiDomainDataset, DOMAIN_NAMES, CLASS_NAMES, DATASET_MAP, get_dataset, DomainDataset, DomainSubset
 
 __all__ = [
     "PACS",
@@ -7,6 +6,7 @@ __all__ = [
     'DomainDataset',
     'DomainSubset',
     "DOMAIN_NAMES",
-    "get_dataset",
-    "get_train_val_datasets"
+    "CLASS_NAMES",
+    "DATASET_MAP",
+    "get_dataset"
 ]

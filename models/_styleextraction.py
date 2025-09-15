@@ -41,7 +41,7 @@ class DomainAwareHook:
 
 
     def _load_stats(self) -> Optional[Dict[str, torch.Tensor]]:
-        """Lade Statistiken direkt von der Datei"""
+        """Load statistics from a file"""
         if not os.path.exists(self.stats_path):
             print(f"Warning: Stats file not found at {self.stats_path}")
             return None
@@ -49,7 +49,7 @@ class DomainAwareHook:
         try:
             stats_dict = torch.load(self.stats_path, map_location=self.device, weights_only=True)
             
-            # Extrahiere die Statistiken für die ZIEL-DOMAIN
+            # extract stats for target domain
             if self.target_domain in stats_dict:
                 return stats_dict[self.target_domain]
             else:
@@ -97,7 +97,7 @@ class DomainAwareHook:
                     mu = mu.repeat(1, repeat_factor, 1, 1)
                     sig = sig.repeat(1, repeat_factor, 1, 1)
     
-            # Dimensionen anpassen: [C] -> [1, C, 1, 1]
+            # [C] -> [1, C, 1, 1]
             if mu.dim() == 1:
                 mu = mu.view(1, -1, 1, 1)
                 sig = sig.view(1, -1, 1, 1)
@@ -119,8 +119,8 @@ class StyleStatistics(nn.Module):
         num_domains: int,
         num_layers: int,
         domain_names: List[str] = None,
-        mode: str = None,       # "average", "selective", "single"
-        layer_config=None,      # for "selective" or "single"
+        mode: str = None,
+        layer_config=None,
         use_ema: bool = True,  # exponential moving average
         ema_momentum: float = DEFAULT_MOMENTUM,  # momentum for EMA
         device="cuda",
@@ -138,10 +138,8 @@ class StyleStatistics(nn.Module):
                 - "single": Use statistics from single target layer.
                 - "average": Average statistics across all layers.
                 - "selective": Use only specified layers (requires layer_config).
-                - "paired": Mix between layer pairs (requires layer_config).
             layer_config: Configuration specific to mode:
                 - For "selective": List of layer indices to use (e.g., [0, 2]).
-                - For "paired": List of layer index pairs (e.g., [(0,1), (1,2)]).
                 - For "single": Can specify target layer via kwargs.
             use_ema (bool): Whether to use exponential moving average for updates.
             ema_momentum (float): Momentum factor for EMA updates (0-1).
@@ -204,17 +202,17 @@ class StyleStatistics(nn.Module):
     def _batch_update(self, domain_idx: torch.Tensor, layer_idx: int, 
                       mu: torch.Tensor, sig: torch.Tensor):
         """
-        Vektorisiertes Update für Batch-Eingaben
+        Vektorised Update for Batch inputs
         Args:
-            domain_idx: LongTensor [B,] mit Domain-Indizes
-            mu: FloatTensor [B,C] oder [B,C,1,1]
-            sig: FloatTensor [B,C] oder [B,C,1,1]
+            domain_idx: LongTensor [B,] with domain indizes
+            mu: FloatTensor [B,C] or [B,C,1,1]
+            sig: FloatTensor [B,C] or [B,C,1,1]
         """
-        # Input Validation
+        # input validation
         assert domain_idx.dim() == 1, "domain_idx must be 1D"
         assert mu.shape[0] == domain_idx.shape[0], "Batch dimension mismatch"
     
-        # Squeeze auf [B,C] falls nötig
+        # squeeze to [B,C] if necessary
         mu = mu.squeeze(-1).squeeze(-1) if mu.dim() == 4 else mu
         sig = sig.squeeze(-1).squeeze(-1) if sig.dim() == 4 else sig
     
@@ -230,7 +228,7 @@ class StyleStatistics(nn.Module):
         elif self.mode == "single":
             return layer_idx == self.target_layer
         
-        return True  # for 'average' and 'attention' modes
+        return True
 
 
     def _get_momentum(self, layer_idx: int, update_count: int) -> float:
@@ -268,7 +266,7 @@ class StyleStatistics(nn.Module):
         if mu.shape != sig.shape:
             raise ValueError("mu and sig must have same shape")
 
-        if mu.dim() not in [2,4]:  # [B,C] oder [B,C,1,1]
+        if mu.dim() not in [2,4]:  # [B,C] or [B,C,1,1]
             raise ValueError("Input must be 2D or 4D tensors")
     
 
@@ -281,14 +279,14 @@ class StyleStatistics(nn.Module):
         update_count = self.layer_counts[domain_idx, layer_idx]
         momentum = self._get_momentum(layer_idx, update_count)
 
-        # Channel-Dimension extrahieren
+        # extract channel dimension
         num_channels = mu.size(1)  # [B, C] → C
 
-        # Initialisiere Layer-Buffer, falls nicht vorhanden oder falsche Dimension
+        # initialise layer buffer if not available or false dimension
         if str(layer_idx) not in self.mu_dict:
             self._init_layer(layer_idx, num_channels)
         elif self.mu_dict[str(layer_idx)].shape[1] != num_channels:
-            # Falls Channel-Dimension nicht übereinstimmt, neu initialisieren
+            # if channel dimensions don't macht, initialise anew
             self._init_layer(layer_idx, num_channels)
 
         mu_mean = mu.mean(dim=0)  # [C]
@@ -346,20 +344,8 @@ class StyleStatistics(nn.Module):
                 - sig: Combined standard deviation statistics
         """        
         if layer_idx is not None:
-            #print("in get style stats, mu_dict[layer_idx][domain_idx]", self.mu_dict[layer_idx][domain_idx])
-            #return (
-             #   self.mu_dict[layer_idx][domain_idx].unsqueeze(-1).unsqueeze(-1),
-              #  self.sig_dict[layer_idx][domain_idx].unsqueeze(-1).unsqueeze(-1)
-            #)
             mu = self.mu_dict[layer_idx][domain_idx]
             sig = self.sig_dict[layer_idx][domain_idx]
-
-            """
-            if self.mode == "average":
-                repeat_factor = 2 ** layer_idx
-                mu = mu.repeat(repeat_factor)
-                sig = sig.repeat(repeat_factor)
-            """
             
             return mu.unsqueeze(-1).unsqueeze(-1), sig.unsqueeze(-1).unsqueeze(-1)
 
@@ -375,7 +361,6 @@ class StyleStatistics(nn.Module):
             sig = self.sig_dict[str(self.target_layer)][domain_idx]
 
             return mu.unsqueeze(-1).unsqueeze(-1), sig.unsqueeze(-1).unsqueeze(-1)
-
         
         elif self.mode == "average":
             # averaging channel values per Block for each domain
@@ -387,11 +372,8 @@ class StyleStatistics(nn.Module):
             for layer in sorted(self.mu_dict.keys(), key=int):
                 layer_mu = self.mu_dict[layer][domain_idx]
                 layer_sig = self.sig_dict[layer][domain_idx]
-
-                #layer_mu = (layer_mu - layer_mu.min()) / (layer_mu.max() - layer_mu.min() + 1e-8)
-                #layer_sig = (layer_sig - layer_sig.min()) / (layer_sig.max() - layer_sig.min() + 1e-8)
             
-                # Interpolate to target dimension
+                # interpolate to target dimension
                 mus.append(self.interpolate_to_size(layer_mu, 256))
                 sigs.append(self.interpolate_to_size(layer_sig, 256))
         
@@ -399,28 +381,23 @@ class StyleStatistics(nn.Module):
             sig = torch.mean(torch.stack(sigs), dim=0)
 
             return mu.unsqueeze(-1).unsqueeze(-1), sig.unsqueeze(-1).unsqueeze(-1)
-
         
         elif self.mode == "selective":
             # averaging across selected layers
             if not self.target_layer:
                 raise ValueError("No target layers specified for selective mode")
 
-            mus, sigs = [], []
+            mus, sigs = {}, {}
             
             for layer in self.target_layer:
                 layer_key = str(layer)
-                if layer_key in self.mu_dict:                   
-                    mus.append(self.mu_dict[layer_key][domain_idx])
-                    sigs.append(self.sig_dict[layer_key][domain_idx])
+                if (layer_key in self.mu_dict) and (layer_key in self.sig_dict):                   
+                    mu = self.mu_dict[layer_key][domain_idx]
+                    sig = self.sig_dict[layer_key][domain_idx]
+                    mus[layer] = mu.unsqueeze(-1).unsqueeze(-1)
+                    sigs[layer] = sig.unsqueeze(-1).unsqueeze(-1)
         
-            mu = torch.mean(torch.stack(mus), dim=0) if mus else torch.zeros(1)
-            sig = torch.mean(torch.stack(sigs), dim=0) if sigs else torch.zeros(1)
-
-            return mu.unsqueeze(-1).unsqueeze(-1), sig.unsqueeze(-1).unsqueeze(-1)
-
-
-        #return mu.unsqueeze(-1).unsqueeze(-1), sig.unsqueeze(-1).unsqueeze(-1)
+            return mus, sigs
 
 
     def save_style_stats_to_json(self, filepath: str) -> None:
@@ -438,7 +415,7 @@ class StyleStatistics(nn.Module):
                 tensor = tensor.detach().cpu()
             return [float(x) for x in tensor.squeeze().cpu().numpy().ravel()]
     
-        # Prepare base stats structure
+        # prepare base stats structure
         stats_dict = {
             "domain_stats": {},
             "metadata": {
@@ -452,7 +429,6 @@ class StyleStatistics(nn.Module):
             }
         }
 
-        #domains_to_save = self.train_domains if hasattr(self, 'train_domains') and self.train_domains is not None else range(self.num_domains)
         if hasattr(self, 'train_domains') and self.train_domains is not None:
             domains_to_save = self.train_domains
         else:
@@ -469,7 +445,7 @@ class StyleStatistics(nn.Module):
             }
 
             if self.mode == "selective":
-                # For selective mode, save each layer separately
+                # for selective mode, save each layer separately
                 for layer in self.target_layer:
                     layer_key = str(layer)
                     if layer_key in self.mu_dict:
@@ -478,7 +454,7 @@ class StyleStatistics(nn.Module):
                             "sig": flatten_stats(self.sig_dict[layer_key][domain_id])
                         }
             else:
-                # For other modes, use the standard format
+                # for other modes, use the standard format
                 try:
                     mu, sig = self.get_style_stats(domain_id)
                     domain_data["mu"] = flatten_stats(mu)
@@ -508,35 +484,31 @@ class StyleStatistics(nn.Module):
 
         style_stats = cls(
         num_domains=stats_dict["metadata"]["num_domains"],
-        num_layers=1,  # Only loading single layer stats now
+        num_layers=1,  # only loading single layer stats
         mode=stats_dict["metadata"]["mode"],
         target_layer=stats_dict["metadata"]["target_layer"]
     )
 
-        # Get domain names and indices
+        # get domain names and indices
         domain_names = list(stats_dict["domain_stats"].keys())
     
-        # Initialize layer
+        # initialize layer
         target_layer = stats_dict["metadata"]["target_layer"]
         if target_layer is not None:
-            # Estimate channel dim from first domain's stats
+            # estimate channel dim from first domain's stats
             sample_mu = stats_dict["domain_stats"][domain_names[0]]["mu"]
             num_channels = len(sample_mu)
             style_stats._init_layer(target_layer, num_channels)
 
-            # Load stats for each domain
+            # load stats for each domain
             for domain_idx, domain_name in enumerate(domain_names):
                 domain_data = stats_dict["domain_stats"][domain_name]
                 style_stats.mu_dict[str(target_layer)][domain_idx] = torch.tensor(domain_data["mu"])
                 style_stats.sig_dict[str(target_layer)][domain_idx] = torch.tensor(domain_data["sig"])
-                style_stats.count[domain_idx] = 1  # Default count
+                style_stats.count[domain_idx] = 1  # default count
             
         return style_stats
     
-
-    #def save_style_stats(self, path) -> None:
-     #   torch.save(self.state_dict(), path)
-
 
     def save_style_stats_to_pth(self, path: str) -> None:
         """
@@ -572,13 +544,6 @@ class StyleStatistics(nn.Module):
             stats_dict[domain_name] = domain_data
 
         torch.save(stats_dict, path)
-
-
-    #TODO wird aktuell nicht gebraucht
-    #@classmethod
-    #def load_style_stats(cls, self, path, device="cuda") -> None:
-        #state_dict = torch.load(path, map_location=device)
-        #self.load_state_dict(state_dict)
 
     
     @classmethod
@@ -646,7 +611,7 @@ class StyleStatistics(nn.Module):
 
     
     def reset_stats(self):
-        """Setzt alle Statistiken zurück"""
+        """Resets all statistics"""
         for layer in self.mu_dict:
             self.mu_dict[layer].data.zero_()
             self.sig_dict[layer].data.zero_()
@@ -655,7 +620,7 @@ class StyleStatistics(nn.Module):
     
 
     def get_domain_stats(self, domain_idx: int) -> dict:
-        """Gibt Statistiken für eine bestimmte Domain zurück"""
+        """Returns statistics for a domain"""
         stats = {}
         for layer in sorted(self.mu_dict.keys()):
             stats[f'layer_{layer}_mu'] = self.mu_dict[layer][domain_idx].cpu().numpy()
@@ -665,7 +630,7 @@ class StyleStatistics(nn.Module):
     
     
     def get_all_stats(self) -> dict:
-        """Gibt alle Statistiken für alle Domains und Layer zurück"""
+        """Returns statistics for all domains and layers"""
         all_stats = {}
         for domain in range(self.num_domains):
             all_stats[f'domain_{domain}'] = self.get_domain_stats(domain)
@@ -718,11 +683,9 @@ class StyleExtractorManager:
         extractors = {}
 
         for name, config in modes.items():
-            # Extrahiere die Parameter für den aktuellen Modus
             mode = config['mode']
             layer_config = config['config']
         
-            # Spezielle Behandlung für single-Modus
             if mode == 'single':
                 kwargs = {'target_layer': int(layer_config['target_layer'])} # layer_config['target_layer']
             elif mode == 'selective':
@@ -753,11 +716,11 @@ class StyleExtractorManager:
             mode_dir = os.path.join(stats_dir, mode_name)
             os.makedirs(mode_dir, exist_ok=True)
             
-            # Save JSON stats
+            # save JSON stats
             json_path = os.path.join(mode_dir, f"style_stats_{domain_name}_{mode_name}.json")
             extractor.save_style_stats_to_json(json_path)
             
-            # Save PyTorch stats
+            # save PyTorch stats
             pth_path = os.path.join(mode_dir, f"style_stats_{domain_name}_{mode_name}.pth")
             extractor.save_style_stats_to_pth(pth_path)
             
@@ -774,36 +737,30 @@ class StyleExtractorManager:
         domain_indices_to_extract: List[int] = None
     ) -> None:
         """
-        Extrahiert Style-Statistiken aus einem gespeicherten Modell-Checkpoint für ALLE Domänen.
-        Speichert die Statistiken im JSON-Format pro Extractor-Modus.
+        Extracts style statistics from a saved model checkpoint for ALL domains.
+        Saves the statistics in JSON format for each extractor mode.
 
         Args:
-            model_path: Pfad zum gespeicherten Modell (.pt)
-            domain_name: Name der Ziel-Domäne (z.B. "sketch")
-            model_class: Klasse des Modells (z.B. resnet50)
-            model_args: Argumente zur Modell-Initialisierung
-            results_dir: Basis-Verzeichnis für die Speicherung
+            model_path: Path to the saved model (.pt/.pth)
+            domain_name: Name of the target domain (e.g., "sketch")
+            model_class: Model class (e.g., resnet50)
+            model_args: Arguments for model initialization
+            results_dir: Base directory for saving the results
         """
+
         model = self._load_model(model_path, model_class, model_args)
         model.eval()
         model.enable_style_stats(True)
         
         if domain_indices_to_extract is None:
             domain_indices_to_extract = list(range(len(self.domain_names)))
-
-        #for extractor in self.extractors.values():
-         #   extractor.train_domains = domain_indices_to_extract
         
         for extractor_name, extractor in self.extractors.items():
             extractor.train_domains = domain_indices_to_extract
 
             for domain_idx in domain_indices_to_extract:
-                #dummy_input = torch.randn(1, 3, 224, 224).to(self.device)
                 hooks = []
                 target_layers = self._get_target_layers(extractor_name, extractor)
-                #with torch.no_grad():
-                    # forward pass triggers _update_style_stats() in the model
-                 #   _ = model(dummy_input, domain_idx=domain_idx)
 
                 for layer_idx in target_layers:
                     hook = DomainAwareHook(style_stats=extractor, domain_idx=domain_idx, layer_idx=layer_idx, device=self.device)
@@ -895,12 +852,8 @@ class StyleExtractorManager:
     
         if target_extractor.target_layer is None:
             target_extractor.target_layer = layer_idx
-        
-        # Initialize layer if needed
-        #if layer_key not in target_extractor.mu_dict:
-         #   target_extractor._init_layer(layer_idx, src_mu.shape[0])
     
-        # Transfer stats
+        # transfer stats
         if domain_idx in target_extractor.train_domains:
             target_extractor.mu_dict[layer_key].data[domain_idx] = src_mu.clone()
             target_extractor.sig_dict[layer_key].data[domain_idx] = src_sig.clone()
@@ -986,11 +939,8 @@ class StyleExtractorManager:
                 
                     elif key == 'count':
                         model.style_stats.count.data.copy_(value)
-        
-                # Load the style stats (old format)
-                #model.style_stats.load_state_dict(style_stats, strict=False)
 
-        # Enable style stats collection
+        # enable style stats collection
         model.enable_style_stats(True)
 
         return model

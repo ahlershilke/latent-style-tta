@@ -25,9 +25,9 @@ conda create -n latent-style-tta python=3.10 -y
 conda activate latent-style-tta
 ```
 
-### Install PyTorch (choose ONE)
+### Install PyTorch (choose one)
 
-CPU only (simple & safe):
+CPU only:
 ```bash
 pip install --index-url https://download.pytorch.org/whl/cpu \
   torch==2.1.2 torchvision==0.16.2
