@@ -14,6 +14,45 @@ Core idea: track “style” (feature mean/std) by domain and layer; at test tim
 
 What’s new here: multiple modes (single / selective / average), on-the-fly activation rewriting via forward hooks, uncertainty evaluation via accuracy drop curves.
 
+## Environment setup
+
+Tested with **Python 3.10.** I recommend using ```conda``` to manage the environment.
+
+### Create and activate the environment
+
+```bash
+conda create -n latent-style-tta python=3.10 -y
+conda activate latent-style-tta
+```
+
+### Install PyTorch (choose ONE)
+
+CPU only (simple & safe):
+```bash
+pip install --index-url https://download.pytorch.org/whl/cpu \
+  torch==2.1.2 torchvision==0.16.2
+```
+
+CUDA 12.1:
+```bash
+pip install --index-url https://download.pytorch.org/whl/cu121 \
+  torch==2.1.2 torchvision==0.16.2
+```
+
+CUDA 11.8:
+```bash
+pip install --index-url https://download.pytorch.org/whl/cu118 \
+  torch==2.1.2 torchvision==0.16.2
+```
+> If you already installed a CUDA build via the PyTorch index, the next step won’t overwrite it. The version is the same, so pip keeps it.
+
+### Install the rest of the requirements
+
+```bash
+pip install -r requirements.txt
+```
+
+
 ## Quickstart: Tune → Train → (Optional) TTA
 
 This repository supports **automatic hyperparameter tuning (LODO)**, **training**, and (optionally) **test-time augmentation evaluation (TTA)** in a single command.
@@ -42,10 +81,11 @@ python run.py \
     --num_trials 40 \
     --num_epochs 60 \
     --domains 4 \
-    --use_mixstyle false
+    --use_mixstyle false \
+    --extract_stats true
 ```
 
-> **Important:** setting `--use_mixstyle false` enables style extraction for TTA
+> **Important:** setting `--extract_stats` enables style extraction for TTA
 
 This will:
 
@@ -76,16 +116,15 @@ python run.py \
     --num_epochs 60 \
     --domains 4 \
     --use_mixstyle false \
+    --extract_stats true \
     --run_tta \
-    --tta_modes single_0 selective_0_1 \
     --tta_output_dir experiments/test_results/pacs_run
 ```
-This will load the saved models from experiments/train_results/saved_models/ and run TTA for all specified modes and seeds.\
+This will load the saved models from experiments/train_results/saved_models/ and run TTA for all modes and seeds.\
 Results will be written as .txt and .json to experiments/test_results/pacs_run/.
 
-Optional Flags:
+Flags:
 - `--run_tta` run TTA after training.
-- `--tta_modes average single_0` which TTA modes to evaluate.
 - `--tta_output_dir <path>` where to store TTA results.
 
 ### 4. View results
@@ -164,7 +203,7 @@ transformed = normalized * sig_from_stats + mu_from_stats
 Per-sample metrics across target domains:
 
 - Class-prob variance (mean over classes)
-- per-sample variance
+- Per-sample variance
 - Drop curves: remove k% most uncertain samples → accuracy curve; compares to random baseline (AUAD).
 - Error detection: AUROC from uncertainty vs correctness.
 
